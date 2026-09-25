@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-"""상주 리스너 프로세스 (최소 버전).
+"""상주 리스너 프로세스.
 
-docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(받아쓰기
-피드백음, 설정 파일 스키마, 프로세스 생명주기 관리)는 TODO로 남긴다.
+docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(설정 파일
+스키마 일부, 프로세스 생명주기 관리 스크립트)는 TODO로 남긴다.
 
-이 최소 버전이 실제로 왕복하는 것:
+이 파일이 실제로 왕복하는 것:
   1. 로컬 TCP 서버(127.0.0.1:8765)로 훅이 보내는 완료 알림 JSON을 수신
   2. 세션별 상태 테이블에 반영
   3. 여러 알림이 겹치면 큐에 쌓아 "{프로젝트명}, {요약}" 형식으로 순차 TTS
   4. (테스트 함수) 텍스트를 직접 넘겨 세션 라우팅 규칙 ①~④, "멈춰 {프로젝트명}"
      브로드캐스트 규칙을 검증
   5. 라우팅 결정된 세션에 voice/inject.js를 subprocess로 호출해 postback
+  6. 실시간 마이크 루프(MicLoop): 항상 마이크를 열어 VAD+wakeword로 호출어
+     대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send로
+     라우팅. TTS 재생 중에는 VAD만으로 바지-인 감지 → 재생 중단 + 즉시 받아쓰기
+     (architecture.md "3. 유휴 상태에서 호출어로 명령", "4. TTS 재생 중 바지-인")
 
-범위 밖(스텁):
-  - 실시간 마이크 VAD/wakeword/STT — voice/vad.py, voice/wakeword.py, voice/stt.py는
-    아직 없음. 이 파일에는 텍스트를 직접 받는 route_and_send()만 있고, 마이크 입력은
-    다루지 않는다.
+MicLoop은 별도 스레드(daemon)에서 돌아 asyncio TCP 서버와 동시에 동작한다
+(작업 지시서 4번 요구사항).
 """
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 # ---- 고정값 (이번 구현에서 확정, docs/architecture.md에 반영) ----
 HOST = "127.0.0.1"
@@ -284,6 +288,10 @@ class TtsQueue:
         self._tts = tts_engine
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._history: list[str] = []  # 테스트 검증용: 실제 재생된 멘트 기록
+        # 바지-인(architecture.md 4번) 지원용 상태. sounddevice 재생은 self._tts.speak()가
+        # 블로킹으로 처리하므로, "지금 재생 중"임을 MicLoop이 확인할 플래그가 필요하다.
+        self._speaking = threading.Event()
+        self._interrupt_requested = threading.Event()
 
     def start(self) -> None:
         self._thread.start()
@@ -292,15 +300,32 @@ class TtsQueue:
         utterance = f"{project_name}, {summary}"
         self._q.put(utterance)
 
+    @property
+    def is_speaking(self) -> bool:
+        """MicLoop이 바지-인 감지 대상 구간인지 판단할 때 쓴다."""
+        return self._speaking.is_set()
+
+    def interrupt(self) -> None:
+        """현재 재생 중인 TTS를 즉시 중단시킨다 (바지-인 트리거 시 MicLoop이 호출)."""
+        self._interrupt_requested.set()
+        try:
+            self._tts.stop()
+        except Exception as e:  # noqa: BLE001 - 중단 실패해도 루프는 계속돼야 함
+            print(f"[tts-queue] 중단 실패: {e}", file=sys.stderr)
+
     def _run(self) -> None:
         while True:
             utterance = self._q.get()
             print(f"[tts-queue] 재생: {utterance!r}")
             self._history.append(utterance)
+            self._interrupt_requested.clear()
+            self._speaking.set()
             try:
                 self._tts.speak(utterance)
             except Exception as e:  # noqa: BLE001 - 재생 실패가 큐 전체를 죽이면 안 됨
                 print(f"[tts-queue] 재생 실패: {e}", file=sys.stderr)
+            finally:
+                self._speaking.clear()
             self._q.task_done()
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
@@ -315,6 +340,198 @@ class TtsQueue:
     @property
     def history(self) -> list[str]:
         return list(self._history)
+
+
+# ---------------------------------------------------------------------------
+# 받아쓰기 피드백 비프음 (architecture.md 확정: 진입 시 높은 톤, 완료 시 낮은 톤)
+# ---------------------------------------------------------------------------
+
+BEEP_SAMPLE_RATE = 16000
+BEEP_DURATION_S = 0.15
+BEEP_HIGH_HZ = 880.0  # 받아쓰기 진입
+BEEP_LOW_HZ = 440.0   # 받아쓰기 완료
+
+
+def _make_beep(freq_hz: float, duration_s: float = BEEP_DURATION_S,
+               sample_rate: int = BEEP_SAMPLE_RATE) -> np.ndarray:
+    """짧은 사인파 비프음을 생성한다. 새 사운드 파일 리소스는 만들지 않는다(작업 지시서 확정 사항)."""
+    t = np.linspace(0, duration_s, int(duration_s * sample_rate), endpoint=False)
+    tone = np.sin(2 * np.pi * freq_hz * t)
+    # 클릭 노이즈 방지용 짧은 페이드 인/아웃
+    fade_len = max(1, int(0.01 * sample_rate))
+    fade = np.linspace(0, 1, fade_len)
+    tone[:fade_len] *= fade
+    tone[-fade_len:] *= fade[::-1]
+    return (tone * 0.3).astype(np.float32)  # 과도한 볼륨 방지
+
+
+def play_beep_blocking(freq_hz: float) -> None:
+    import sounddevice as sd
+
+    audio = _make_beep(freq_hz)
+    sd.play(audio, samplerate=BEEP_SAMPLE_RATE)
+    sd.wait()
+
+
+# ---------------------------------------------------------------------------
+# 실시간 마이크 루프 (architecture.md "3. 유휴 상태에서 호출어로 명령",
+# "4. TTS 재생 중 바지-인")
+# ---------------------------------------------------------------------------
+
+MIC_SAMPLE_RATE = 16000  # voice/vad.py, voice/stt.py 모두 16kHz 기준
+DICTATION_MAX_S = 15.0  # 받아쓰기 최대 길이 안전장치 (무한정 녹음 방지)
+
+
+class MicLoop:
+    """상시 마이크 루프: 유휴 상태에서는 호출어 대기, TTS 재생 중에는 바지-인 감지.
+
+    별도 스레드(daemon)에서 run()을 실행해 asyncio TCP 서버와 동시에 돈다
+    (작업 지시서 4번). 무거운 모델(SttEngine, WakeWordDetector)은 스레드
+    시작 시 1회만 로딩한다.
+    """
+
+    def __init__(self, table: SessionTable, tts_queue: TtsQueue,
+                 stt_engine=None, wake_detector=None,
+                 sample_rate: int = MIC_SAMPLE_RATE):
+        self.table = table
+        self.tts_queue = tts_queue
+        self.sample_rate = sample_rate
+        self._stt_engine = stt_engine
+        self._wake_detector = wake_detector
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        # 테스트 가시성용: 마지막으로 처리한 받아쓰기 결과와 라우팅 결과 기록
+        self.last_transcript: Optional[str] = None
+        self.last_route_result: Optional[dict] = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run_safe, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _ensure_models(self) -> None:
+        if self._stt_engine is None:
+            from voice.stt import SttEngine
+            print("[mic-loop] STT 모델 로딩 중...")
+            self._stt_engine = SttEngine()
+            print("[mic-loop] STT 모델 로딩 완료")
+        if self._wake_detector is None:
+            from voice.wakeword import WakeWordDetector
+            self._wake_detector = WakeWordDetector()
+
+    def _run_safe(self) -> None:
+        try:
+            self._ensure_models()
+            self.run()
+        except Exception as e:  # noqa: BLE001 - 마이크 루프가 죽어도 TCP 서버는 살아있어야 함
+            print(f"[mic-loop] 치명적 오류로 중단: {e}", file=sys.stderr)
+
+    def run(self) -> None:
+        """상시 루프: sounddevice 입력 스트림 하나를 열어 계속 청크를 읽는다."""
+        import sounddevice as sd
+        from voice.vad import SpeechStartDetector, CHUNK_SAMPLES
+
+        if not self._wake_detector.is_onboarded():
+            print(
+                f"[mic-loop] 호출어 '{self._wake_detector.wake_word}' 온보딩이 안 돼 "
+                f"있어 마이크 루프를 시작하지 않습니다. wakeword.onboard()를 먼저 실행하세요.",
+                file=sys.stderr,
+            )
+            return
+
+        print("[mic-loop] 마이크 루프 시작 (호출어 대기)")
+        with sd.InputStream(samplerate=self.sample_rate, channels=1,
+                             dtype=np.float32, blocksize=CHUNK_SAMPLES) as stream:
+            barge_in_detector = SpeechStartDetector(sample_rate=self.sample_rate)
+            while not self._stop.is_set():
+                if self.tts_queue.is_speaking:
+                    # 4. TTS 재생 중 바지-인: VAD로 발화 시작만 감지, 호출어 불필요
+                    chunk, _overflow = stream.read(CHUNK_SAMPLES)
+                    chunk = chunk[:, 0]
+                    if barge_in_detector.push(chunk):
+                        print("[mic-loop] 바지-인 감지: TTS 중단 + 받아쓰기 진입")
+                        self.tts_queue.interrupt()
+                        barge_in_detector.reset()
+                        self._dictation_cycle(stream, play_entry_beep=True)
+                    continue
+                barge_in_detector.reset()
+
+                # 3. 유휴 상태: 호출어 감지 대기 (lwake.listen()은 blocking이라
+                # 감지 콜백 안에서 예외를 던져 빠져나온다)
+                self._wait_for_wakeword(stream)
+                if self._stop.is_set():
+                    break
+                print("[mic-loop] 호출어 감지: 받아쓰기 진입")
+                self._dictation_cycle(stream, play_entry_beep=True)
+
+        print("[mic-loop] 마이크 루프 종료")
+
+    def _wait_for_wakeword(self, stream) -> None:
+        """호출어가 감지될 때까지 블록. 감지되거나 stop()이 호출되면 반환."""
+
+        class _WakeDetected(Exception):
+            pass
+
+        def _on_detect(_detection: dict) -> None:
+            raise _WakeDetected()
+
+        # lwake.listen()은 자체 while True 루프라, self._stop을 주기적으로
+        # 확인할 수 없다. 대신 짧은 슬라이스로 나눠 반복 호출해 stop() 반응성을 확보한다.
+        # (listen()이 stream.read()를 계속 호출하므로, 완전한 인터럽트는 불가능하지만
+        # 예외로 빠져나오는 구조 자체는 정상 동작한다 — 마이크 실시간 검증은 별도 확인 필요)
+        while not self._stop.is_set():
+            try:
+                self._wake_detector.listen_blocking(_on_detect, stream=stream)
+            except _WakeDetected:
+                return
+            except Exception as e:  # noqa: BLE001
+                print(f"[mic-loop] wakeword listen 오류, 재시도: {e}", file=sys.stderr)
+                time.sleep(0.5)
+
+    def _dictation_cycle(self, stream, play_entry_beep: bool) -> None:
+        """받아쓰기 모드 한 사이클: 진입 비프 -> 녹음(VAD 종료 감지) -> 완료 비프 -> STT -> 라우팅."""
+        from voice.vad import SpeechEndDetector, CHUNK_SAMPLES
+
+        if play_entry_beep:
+            play_beep_blocking(BEEP_HIGH_HZ)
+
+        detector = SpeechEndDetector(sample_rate=self.sample_rate)
+        recorded_chunks: list[np.ndarray] = []
+        max_chunks = int(DICTATION_MAX_S * self.sample_rate / CHUNK_SAMPLES)
+
+        for _ in range(max_chunks):
+            if self._stop.is_set():
+                return
+            chunk, _overflow = stream.read(CHUNK_SAMPLES)
+            chunk = chunk[:, 0].copy()
+            recorded_chunks.append(chunk)
+            detector.push(chunk)
+            if detector.is_finished:
+                break
+
+        play_beep_blocking(BEEP_LOW_HZ)
+
+        if not recorded_chunks:
+            return
+        audio = np.concatenate(recorded_chunks)
+        if not detector.has_speech_started:
+            print("[mic-loop] 발화 없음(무음만 녹음됨), 라우팅 생략")
+            return
+
+        print("[mic-loop] STT 인식 중...")
+        text = self._stt_engine.transcribe(audio, self.sample_rate, language="ko")
+        print(f"[mic-loop] 인식 결과: {text!r}")
+        self.last_transcript = text
+
+        if not text.strip():
+            print("[mic-loop] 빈 인식 결과, 라우팅 생략")
+            return
+
+        result = route_and_send(self.table, text)
+        self.last_route_result = result
+        print(f"[mic-loop] 라우팅 결과: {result}")
 
 
 # ---------------------------------------------------------------------------

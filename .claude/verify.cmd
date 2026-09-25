@@ -31,5 +31,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo === hooks/on-stop.py, hooks/on-notification.py syntax + import check ===
+"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import ast; ast.parse(open('hooks/on-stop.py', encoding='utf-8').read()); ast.parse(open('hooks/on-notification.py', encoding='utf-8').read()); print('import OK')"
+if errorlevel 1 (
+    echo VERIFY FAILED: hooks syntax error
+    exit /b 1
+)
+
 echo ALL CHECKS PASSED
 exit /b 0

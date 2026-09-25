@@ -267,6 +267,29 @@ cmd.exe가 배치 파일의 문자열 인자를 자식 프로세스(python.exe)�
 
 ---
 
+## 11. Notification 훅 stdin 필드 — 아직 실측 캡처 로그 없음 (미해결, 확인 필요)
+
+**상태**
+`hooks/on-notification.py`는 `message` 필드(없으면 `title`)를 읽도록 작성돼 있고,
+`docs/decisions.md`의 2026-09-25 항목에 "Notification 훅 stdin의 실제 필드는 실측 확인"이라고
+적혀 있다. 하지만 2026-09-26 재검증 시점에 `.scratch/notification_dump.txt`(캡처용으로
+`.claude/settings.local.json`에 걸어둔 임시 훅 `.scratch/dump_notification.py`의 출력 파일)가
+**존재하지 않았다** — 즉 이 프로젝트 저장소 안에 Notification 이벤트의 실제 stdin JSON을
+눈으로 확인한 로그 파일 증거가 남아있지 않다.
+
+**원인 추정**
+Notification 이벤트는 Stop과 달리 권한 확인 대기·장시간 유휴 등 특정 상황에서만 발생해서,
+매 세션 자연 발생을 보장할 수 없다. 이전 세션에서 캡처했더라도 검증 후 파일을 정리했을
+가능성, 또는 애초에 이 프로젝트 저장소가 아닌 다른 경로에서 캡처했을 가능성이 있다.
+
+**다음 세션에서 할 일**
+`.claude/settings.local.json`에 이미 `Notification → .scratch/dump_notification.py` 임시
+훅이 등록돼 있으므로, 권한 확인이 실제로 뜨는 명령(예: 미승인 Bash 도구)을 실행해 Notification
+이벤트를 의도적으로 유발한 뒤 `.scratch/notification_dump.txt`가 생성되는지, `message` 필드가
+실제로 존재하는지 눈으로 재확인한다. 확인되면 이 항목을 "해결"로 갱신하고 임시 훅은 삭제한다.
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |

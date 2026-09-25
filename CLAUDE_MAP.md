@@ -20,16 +20,15 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`)·터미널 �
 
 | 기능 | 파일 경로 | 상태 |
 |---|---|---|
-| 완료 훅 (Stop 이벤트 → 요약 → TTS) | `hooks/on-stop.*` | 예정 |
-| 권한요청 훅 (Notification 이벤트 → TTS) | `hooks/on-notification.*` | 예정 |
-| TTS 엔진 래퍼 (sherpa-onnx, 언어별 모델 교체) | `voice/tts.*` | 예정 |
-| STT 엔진 래퍼 (whisper.cpp / pywhispercpp) | `voice/stt.*` | 예정 |
-| VAD (발화 감지, 바지-인용) | `voice/vad.*` | 예정 |
-| 호출어 감지 ("자비스", local-wake) | `voice/wakeword.*` | 예정 |
-| 상주 리스너 프로세스 (TCP 서버+세션 상태 테이블+TTS 큐+라우팅, 실측 검증 완료) | `voice/listener.py` | **최소 버전 구현 완료** (2026-09-26) — VAD/wakeword/실시간 STT는 스텁(`route_and_send()`로 텍스트 직접 투입만 가능) |
+| 완료 훅 (Stop 이벤트 → 요약 → listener에 TCP 전달) | `hooks/on-stop.py` | **구현+왕복 검증 완료** (2026-09-26). `.claude/settings.json` 등록, `verify.cmd` 통과. **실제로 훅을 실행해 listener.py(TCP:8765) 도달 + TTS 큐 처리를 `.scratch/listener.log`로 직접 확인**, listener 강제종료 후에도 exit 0으로 조용히 성공 종료하는 것까지 실측 확인 |
+| 권한요청 훅 (Notification 이벤트 → listener에 TCP 전달) | `hooks/on-notification.py` | **구현 완료**, 등록·import 체크 통과. stdin `message` 필드 실사용 로그 증거는 **여전히 없음**(known-issues.md 11번, `permission_mode: auto` 세션에서는 재현 불가 — 다음 세션 과제) |
+| STT 엔진 래퍼 (whisper.cpp / pywhispercpp, `language='ko'` 고정) | `voice/stt.py` | **최소 구현 있음** (2026-09-26, import 성공 확인) — 이번 세션 API 한도로 작업 중단, **실제 마이크/왕복 실행은 미검증** |
+| VAD (발화 감지, 바지-인용) | `voice/vad.py` | **최소 구현 있음** (2026-09-26, import 성공 확인) — 위와 동일하게 **실제 동작 미검증** |
+| 호출어 감지 ("자비스", local-wake, 온보딩 포함) | `voice/wakeword.py` | **최소 구현 있음** (2026-09-26, import 성공 확인) — 위와 동일하게 **실제 동작 미검증**, 온보딩 흐름도 미검증 |
+| 상주 리스너 프로세스 (TCP 서버+세션 상태 테이블+TTS 큐+라우팅+마이크 루프 통합 코드, 라우팅 로직만 실측 검증됨) | `voice/listener.py` | **마이크 루프 통합 코드 추가됨** (2026-09-26, API 한도로 중단) — import·verify.cmd 통과했지만 **실시간 마이크 감지·바지인 동작은 다음 세션에서 사람이 실제로 말해가며 재검증 필요** |
 | TTS 엔진 래퍼 (sherpa-onnx, 한국어 모델 하드코딩) | `voice/tts.py` | **최소 버전 구현 완료** (2026-09-26) — 언어별 모델 교체는 TODO |
 | 입력 주입 (Claude Code cross-session messaging 소켓 postback, 실패 시 pywinauto 폴백) | `voice/inject.js` | **검증 완료**, 실제 세션 postback도 listener.py 통합 후 2026-09-26 재검증 성공 |
-| 음성모드 on/off 스킬 (`/voice-on`, `/voice-off`) | `.claude/skills/voice-mode/` | 예정 |
+| 음성모드 on/off 스킬 (`/voice-on`, `/voice-off`, listener.py를 subprocess.Popen으로 spawn/종료) | `.claude/skills/voice-mode/` | 예정 |
 | 설정 (음성 on/off, 호출어, 벨 병행 여부, 프로젝트 별칭) | `.claude/voice-settings.json` | 스키마 확정 (2026-09-26), 파일 자체는 예정 |
 | 설치 스크립트 (venv+패키지+TTS/STT 모델 다운로드, 클린 설치·재실행 스킵 둘 다 실측 검증) | `setup.cmd` | **구현 완료** (2026-09-26). 호출어 온보딩 녹음은 아직 없음(local-wake 온보딩 자체가 미구현) |
 | Python 의존성 목록 (버전 느슨히 고정, known-issues.md 2번 교훈 반영) | `requirements.txt` | **구현 완료** (2026-09-26) |

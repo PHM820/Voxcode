@@ -58,6 +58,15 @@ class TtsEngine:
             sd.play(samples, samplerate=sample_rate)
             sd.wait()
 
+    def stop(self) -> None:
+        """재생 중인 오디오를 즉시 중단한다 (바지-인용).
+
+        speak()는 sd.wait()로 블록 중이므로, 다른 스레드에서 이 메서드를
+        부르면 sd.stop()이 재생을 끊고 sd.wait()가 곧바로 반환한다
+        (sounddevice의 표준 동작 — 별도 락 없이 호출 가능).
+        """
+        sd.stop()
+
 
 def _manual_test():
     """수동 실행 검증용: python voice/tts.py "읽을 텍스트" """
