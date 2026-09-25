@@ -21,7 +21,8 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`) 위에 얹는
 | STT 엔진 래퍼 (whisper.cpp / pywhispercpp) | `voice/stt.*` | 예정 |
 | VAD (발화 감지, 바지-인용) | `voice/vad.*` | 예정 |
 | 호출어 감지 ("자비스", local-wake) | `voice/wakeword.*` | 예정 |
-| 상주 리스너 프로세스 (VAD+wakeword+STT 오케스트레이션) | `voice/listener.*` | 예정 |
+| 상주 리스너 프로세스 (VAD+wakeword+STT 오케스트레이션 + 세션 소켓 postback) | `voice/listener.*` | 예정 |
+| 입력 주입 (Claude Code cross-session messaging 소켓 postback, 실패 시 pywinauto 폴백) | `voice/inject.*` | 예정 |
 | 음성모드 on/off 스킬 (`/voice-on`, `/voice-off`) | `.claude/skills/voice-mode/` | 예정 |
 | 설정 (음성 on/off, 벨 병행 여부 등) | `.claude/settings.json` | 예정 |
 | 설치 스크립트 (모델 다운로드, 호출어 온보딩 녹음 포함) | `setup.*` | 예정 |
@@ -38,4 +39,6 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`) 위에 얹는
 - STT: whisper.cpp (pywhispercpp 바인딩, cp312 사전빌드 wheel 확인됨, 컴파일러 불필요)
 - VAD: Silero VAD (MIT, local-wake에 내장되어 있어 별도 설치 불필요)
 - 호출어: local-wake (학습 없이 본인 목소리 녹음만으로 온보딩, 실측 CPU 3.4%/RAM 325MB)
+- 입력 주입: Claude Code 공식 cross-session messaging 소켓에 자기 세션 postback (미검증, 최우선 후보) — 실패 시 pywinauto(가짜 키입력) 폴백
+- 아키텍처: 상주 프로세스 하나(`voice/listener.*`)로 VAD+호출어+STT+TTS+소켓 통신 전부 처리. Claude Code 훅↔상주 프로세스는 로컬 TCP 소켓(127.0.0.1 고정 포트)
 - 대상 OS: Windows (1차), macOS/Linux는 추후 고려
