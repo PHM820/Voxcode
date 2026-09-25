@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.scratch/
 
 # Env / secrets
 .env
