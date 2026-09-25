@@ -16,8 +16,9 @@ import numpy as np
 import sherpa_onnx
 import sounddevice as sd
 
-# TODO: 설정 파일로 뺄 것 (아직 .claude/settings.json 스키마 미정, architecture.md 참고)
-DEFAULT_MODEL_DIR = ".scratch/sherpa_models/vits-mimic3-ko_KO-kss_low"
+# TODO: voice-settings.json에서 language 읽어 언어별 모델 디렉토리를 고르게 할 것
+# (지금은 한국어 하나뿐이라 하드코딩, architecture.md 참고)
+DEFAULT_MODEL_DIR = "models/tts/vits-mimic3-ko_KO-kss_low"
 
 
 class TtsEngine:

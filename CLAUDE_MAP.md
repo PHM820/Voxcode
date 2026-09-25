@@ -31,7 +31,8 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`)·터미널 �
 | 입력 주입 (Claude Code cross-session messaging 소켓 postback, 실패 시 pywinauto 폴백) | `voice/inject.js` | **검증 완료**, 실제 세션 postback도 listener.py 통합 후 2026-09-26 재검증 성공 |
 | 음성모드 on/off 스킬 (`/voice-on`, `/voice-off`) | `.claude/skills/voice-mode/` | 예정 |
 | 설정 (음성 on/off, 호출어, 벨 병행 여부, 프로젝트 별칭) | `.claude/voice-settings.json` | 스키마 확정 (2026-09-26), 파일 자체는 예정 |
-| 설치 스크립트 (모델 다운로드, 호출어 온보딩 녹음 포함) | `setup.*` | 예정 |
+| 설치 스크립트 (venv+패키지+TTS/STT 모델 다운로드, 클린 설치·재실행 스킵 둘 다 실측 검증) | `setup.cmd` | **구현 완료** (2026-09-26). 호출어 온보딩 녹음은 아직 없음(local-wake 온보딩 자체가 미구현) |
+| Python 의존성 목록 (버전 느슨히 고정, known-issues.md 2번 교훈 반영) | `requirements.txt` | **구현 완료** (2026-09-26) |
 | 검증 | `.claude/verify.cmd` | 이번 harness에서 생성 |
 | 결정 기록 | `docs/decisions.md` | 이번 harness에서 생성 |
 | 설치 중 겪은 문제·해결 기록 (setup 스크립트 자동화 대상 목록) | `docs/known-issues.md` | 2026-09-25 실측 세션에서 생성. eunjeon 컴파일 문제는 미해결 |

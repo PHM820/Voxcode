@@ -2,10 +2,11 @@
 REM Project health check - run by /delegate judge and before reporting work as done.
 setlocal
 
-set VENV_PY=.venv_sherpa_test\Scripts\python.exe
+set VENV_PY=.venv\Scripts\python.exe
+if not exist "%VENV_PY%" set VENV_PY=.venv_sherpa_test\Scripts\python.exe
 
 if not exist "%VENV_PY%" (
-    echo VERIFY SKIPPED: %VENV_PY% not found - run setup first
+    echo VERIFY SKIPPED: no venv found - run setup.cmd first
     exit /b 3
 )
 
@@ -17,7 +18,7 @@ if errorlevel 1 (
 )
 
 echo === voice/listener.py routing unit checks (no audio, no TCP) ===
-"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); from voice.listener import SessionTable, route_command, parse_stop_command; t=SessionTable(); t.upsert_from_notify('s1','proj-x','s1','tok1'); assert route_command(t,'anything').project_name=='proj-x'; assert parse_stop_command('멈춰')is None; assert parse_stop_command('멈춰 proj-x')=='proj-x'; print('routing checks OK')"
+"%VENV_PY%" .claude\verify_routing.py
 if errorlevel 1 (
     echo VERIFY FAILED: routing logic
     exit /b 1
