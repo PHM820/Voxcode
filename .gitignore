@@ -1,0 +1,40 @@
+# Node
+node_modules/
+dist/
+build/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+.env.*
+*.keystore
+*.jks
+local.properties
+
+# Models (TTS/STT weights — too large for git, downloaded on setup)
+models/
+*.onnx
+*.bin
+*.pt
+*.gguf
+
+# Audio artifacts
+*.wav
+*.mp3
+!assets/**/*.wav
+!assets/**/*.mp3
+
+# Claude Code local
+.claude/settings.local.json
+.dlg/
+.claude/worktrees/
+
+# OS
+Thumbs.db
+.DS_Store
