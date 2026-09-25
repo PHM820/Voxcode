@@ -118,6 +118,22 @@ Get it with "Microsoft C++ Build Tools"
 
 ---
 
+## 5. whisper.cpp는 16000Hz 오디오만 받음 (해결됨, 설계에 반영 필요)
+
+**증상**
+```
+Exception: WAV file must be 16000 Hz
+```
+sherpa-onnx가 생성한 wav(22050Hz)를 pywhispercpp에 바로 넣으면 실패.
+
+**원인**
+whisper.cpp는 입력 오디오가 정확히 16000Hz여야 한다는 제약이 있다(모델 학습 조건). TTS 엔진(sherpa-onnx)과 STT 엔진(whisper.cpp)은 서로 다른 목적(하나는 스피커 출력용, 하나는 마이크 입력용)이라 실제 사용에서 이 둘이 오디오를 주고받을 일은 없지만, 테스트나 디버깅 중 TTS 출력을 STT로 검증하려면 리샘플링이 필요하다.
+
+**해결**
+`numpy.interp` 기반 선형 보간으로 충분히 해결됨(테스트 목적). 다만 **실제 마이크 입력 경로 설계 시 확인 필요**: local-wake가 쓰는 sounddevice나 다른 마이크 캡처 라이브러리가 몇 Hz로 녹음하는지 맞춰서, STT로 넘기기 전 필요하면 리샘플링 단계를 `voice/stt.*` 래퍼 안에 넣어야 한다.
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |
