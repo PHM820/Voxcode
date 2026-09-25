@@ -1,0 +1,67 @@
+eyes-free-coding
+Copyright (c) 2026 eyes-free-coding contributors
+
+This work (the entire project — code in hooks/, voice/, .claude/, setup
+scripts, and documentation, as well as any bundled model files) is licensed
+under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License (CC BY-NC-SA 4.0).
+
+Why the whole project uses this license (not just the bundled model):
+the Korean TTS model this project bundles (vits-mimic3-ko_KO-kss_low, based
+on the KSS dataset) is itself licensed CC-BY-NC-SA 4.0. Its ShareAlike (SA)
+clause requires any distribution that includes it to carry the same license.
+Rather than splitting "permissive code + restricted model," this project
+unifies under CC-BY-NC-SA 4.0 for the whole repository, matching the
+decision recorded in docs/decisions.md (2026-09-25: "이 프로젝트를 완전
+비상업... 조건 하에 사용 확정").
+
+================================================================================
+
+Human-readable summary (this is not a substitute for the license — see the
+full legal text linked below):
+
+You are free to:
+  - Share — copy and redistribute the material in any medium or format
+  - Adapt — remix, transform, and build upon the material
+
+  The licensor cannot revoke these freedoms as long as you follow the
+  license terms.
+
+Under the following terms:
+  - Attribution — You must give appropriate credit, provide a link to the
+    license, and indicate if changes were made. You may do so in any
+    reasonable manner, but not in any way that suggests the licensor
+    endorses you or your use.
+  - NonCommercial — You may not use the material for commercial purposes
+    (use primarily intended for or directed toward commercial advantage or
+    monetary compensation).
+  - ShareAlike — If you remix, transform, or build upon the material, you
+    must distribute your contributions under the same license as the
+    original.
+  - No additional restrictions — You may not apply legal terms or
+    technological measures that legally restrict others from doing anything
+    the license permits.
+
+Notices:
+  You do not have to comply with the license for elements of the material
+  in the public domain or where your use is permitted by an applicable
+  exception or limitation. No warranties are given. The license may not
+  give you all of the permissions necessary for your intended use. For
+  example, other rights such as publicity, privacy, or moral rights may
+  limit how you use the material.
+
+================================================================================
+
+Full legal code (official, authoritative text):
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+Human-readable deed (summary page):
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+================================================================================
+
+Third-party model licenses bundled or downloaded by this project:
+  - vits-mimic3-ko_KO-kss_low (Korean TTS voice model, downloaded by
+    setup.cmd into models/tts/): CC-BY-NC-SA 4.0, derived from the KSS
+    (Korean Single Speaker) dataset. See docs/decisions.md for the license
+    review and the conditions under which this project accepted it.
