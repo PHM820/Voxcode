@@ -132,12 +132,47 @@
 | 여러 세션이 동시에 완료됐을 때 TTS 재생 큐 순서와 구분 멘트 문구 | **형식 확정**: "{프로젝트명}, {요약}", 순서는 도착 순(선착순)으로 충분 — 우선순위 개념은 실사용 후 필요하면 추가 |
 | 로컬 TCP 소켓 메시지에 세션 식별자를 어떤 형태로 담을지 | **확정**: 별도 uuid 없이 세션의 `CLAUDE_CODE_MESSAGING_SOCKET` 경로 자체를 키로 사용 |
 | 로컬 TCP 소켓 포트 번호, 메시지 포맷(JSON 스키마 필드 이름) | 미정 — 필드 구성(세션 식별자/프로젝트명/텍스트)은 정해졌으나 정확한 키 이름·포트 번호는 구현 시 확정 |
-| 작업 완료 시 Claude Code 공식 터미널 벨을 음성 요약과 병행 재생할지 여부 | **켜고 끌 수 있는 설정으로 확정** (2026-09-26). 새 비프음을 만드는 게 아니라 기존 공식 벨 기능의 on/off 선택. 기본값, 설정 키 이름은 미정 |
+| 작업 완료 시 Claude Code 공식 터미널 벨을 음성 요약과 병행 재생할지 여부 | **설정 키 확정**: `voice-settings.json`의 `play_official_bell`(기본 `true`) |
 | 받아쓰기 모드 진입/종료 시 사용자 피드백(신호음? 짧은 TTS?) | 미정 |
-| 상주 프로세스 시작/종료 방법 (`/voice-on`, `/voice-off` 스킬이 어떻게 프로세스를 관리하는지 — OS 프로세스 spawn? Windows 서비스?) | 미정, 2026-09-25 발언에서 언급만 됨 |
-| 설정 파일 구조(`.claude/settings.json`에 음성 on/off, 벨 병행 여부 등을 어떤 키로 저장) | 미정 |
+| 상주 프로세스 시작/종료 방법 | **방식 확정** (2026-09-26). 아래 "설정 파일과 프로세스 생명주기" 참고 |
+| 설정 파일 구조 | **확정** (2026-09-26). 아래 "설정 파일과 프로세스 생명주기" 참고 |
 | 상주 프로세스가 죽었을 때 훅의 동작 (조용히 무시? 터미널 벨로 폴백?) | 미정 — `ConnectionRefusedError` 감지까지는 결정됨, 그 다음 행동은 미정 |
 | `setup.*` 설치 스크립트가 known-issues.md의 7개 우회를 어떻게 자동화할지 | 미정 |
+
+## 설정 파일과 프로세스 생명주기 (2026-09-26 확정)
+
+### 설정 파일: `.claude/voice-settings.json`
+`.claude/settings.json`(Claude Code 공식 설정)에 얹지 않고 **별도 파일로 분리**한다 — 공식 스키마와
+섞이면 Claude Code 업데이트로 깨질 위험이 있고, 프로젝트마다 다른 음성 설정(호출어, 벨 병행 여부
+등)을 자연스럽게 가질 수 있어야 하기 때문. 파일이 없으면 아래 기본값으로 동작(설치 직후 별도
+설정 없이 바로 사용 가능해야 함).
+
+```json
+{
+  "enabled": true,
+  "wake_word": "자비스",
+  "language": "ko",
+  "play_official_bell": true,
+  "project_alias": null
+}
+```
+
+| 키 | 의미 | 기본값 |
+|---|---|---|
+| `enabled` | 음성모드 전역 on/off. `/voice-on`·`/voice-off`가 토글 | `true` |
+| `wake_word` | 호출어 (local-wake 온보딩 대상) | `"자비스"` |
+| `language` | whisper STT 언어 코드 — 항상 명시 필요(known-issues.md 6번) | `"ko"` |
+| `play_official_bell` | 완료 시 공식 터미널 벨을 음성 요약과 병행 재생할지 | `true` |
+| `project_alias` | TTS로 읽을 프로젝트명. `null`이면 `cwd` 폴더명 그대로 사용 | `null` |
+
+### 상주 프로세스 생명주기: OS 프로세스 spawn (Windows 서비스 아님)
+- `/voice-on`: PID 파일 또는 고정 포트 점유 여부로 이미 떠 있는지 확인 → 없으면 `voice/listener.py`를
+  분리된 백그라운드 프로세스로 spawn(`subprocess.Popen` + Windows `DETACHED_PROCESS` 플래그) →
+  `voice-settings.json`의 `enabled`를 `true`로 기록
+- `/voice-off`: `enabled`를 `false`로 기록 → 상주 프로세스에 로컬 TCP 소켓으로 종료 신호 전송 →
+  프로세스가 스스로 정리 후 종료
+- **Windows 서비스로 만들지 않는다** — 사용자가 로그인해서 실제로 코딩할 때만 필요한 도구라 상시
+  구동(재부팅 후 자동 시작 등)까지는 과함. 설치 복잡도만 올라가고 얻는 이득이 없어 채택 안 함
 
 ## 참고
 - 세부 결정과 실측 근거: `docs/decisions.md`
