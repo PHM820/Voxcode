@@ -17,8 +17,8 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`) 위에 얹는
 |---|---|---|
 | 완료 훅 (Stop 이벤트 → 요약 → TTS) | `hooks/on-stop.*` | 예정 |
 | 권한요청 훅 (Notification 이벤트 → TTS) | `hooks/on-notification.*` | 예정 |
-| TTS 엔진 래퍼 (MeloTTS-Korean) | `voice/tts.*` | 예정 |
-| STT 엔진 래퍼 (whisper.cpp) | `voice/stt.*` | 예정 |
+| TTS 엔진 래퍼 (sherpa-onnx, 언어별 모델 교체) | `voice/tts.*` | 예정 |
+| STT 엔진 래퍼 (whisper.cpp / pywhispercpp) | `voice/stt.*` | 예정 |
 | VAD (발화 감지, 바지-인용) | `voice/vad.*` | 예정 |
 | 호출어 감지 ("자비스", local-wake) | `voice/wakeword.*` | 예정 |
 | 상주 리스너 프로세스 (VAD+wakeword+STT 오케스트레이션) | `voice/listener.*` | 예정 |
@@ -31,8 +31,11 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`) 위에 얹는
 
 ## 스택 (확정)
 - 훅 실행: Claude Code Hooks (settings.json에 등록, Stop/Notification 이벤트)
-- TTS: MeloTTS-Korean (MIT, CPU 동작)
-- STT: whisper.cpp (base/small 모델, CPU 전용)
-- VAD: Silero VAD (MIT, 바지-인 감지용)
-- 호출어: local-wake (학습 없이 본인 목소리 녹음만으로 온보딩)
+- TTS: sherpa-onnx 런타임(런타임 123MB, 컴파일러 불필요, 실측 검증됨) + 언어별 모델 파일
+  - 한국어: `vits-mimic3-ko_KO-kss_low` (63MB, 여성 화자 1명, CC-BY-NC-SA 4.0 — 비상업 전제로 사용)
+  - 다른 언어: 필요 시 Piper 계열(영어 등 40개 이상 언어, 536개 모델 중 선택)
+  - ~~MeloTTS-Korean~~ 폐기: 설치 2.2GB+eunjeon 컴파일 필요(미해결), 한국어 모델로 영어 읽으면 발음 깨짐 확인됨
+- STT: whisper.cpp (pywhispercpp 바인딩, cp312 사전빌드 wheel 확인됨, 컴파일러 불필요)
+- VAD: Silero VAD (MIT, local-wake에 내장되어 있어 별도 설치 불필요)
+- 호출어: local-wake (학습 없이 본인 목소리 녹음만으로 온보딩, 실측 CPU 3.4%/RAM 325MB)
 - 대상 OS: Windows (1차), macOS/Linux는 추후 고려
