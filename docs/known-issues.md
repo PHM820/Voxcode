@@ -155,6 +155,40 @@ whisper.cpp는 입력 오디오가 정확히 16000Hz여야 한다는 제약이 �
 
 ---
 
+## 7. Cross-session messaging 소켓에 auth+user 메시지를 나눠 쓰면 조용히 drop됨 (해결됨, 설계에 반영 필요)
+
+**증상**
+`voice/inject.js`에서 `socket.write({type:"auth",...})`와 `socket.write({type:"user",...})`를
+따로 두 번 호출하면, 소켓 `write()` 자체는 에러 없이 성공(콜백/이벤트 정상)하지만 실제로는
+메시지가 세션에 전혀 도착하지 않는다. 에러도 없고 로그도 안 남아 원인 파악이 어렵다.
+
+**원인**
+claude.exe 바이너리의 디버그 문자열 확인 결과, uds-messaging 서버는 "완전한 한 줄"이 도착하기를
+기다리며, 연결 후 일정 시간 내 완전한 줄이 오지 않으면 조용히 연결을 닫는다
+(`[uds-messaging] Closing a connection that sent no complete line within ... ms`). 공식 예제
+코드도 힌트로 "run the command first, then connect and write its output as ONE line"이라고
+명시한다. `write()`를 두 번 나눠 호출하면 OS/네트워크 계층에서 별도 패킷으로 쪼개져 도착할 수
+있어, 서버가 완전한 한 줄로 못 묶고 드롭하는 것으로 추정된다.
+
+**해결 (실제로 검증됨)**
+`auth` JSON과 `user` JSON을 각각 `\n`으로 끝나는 문자열로 만든 뒤, **하나의 문자열로 이어붙여
+`socket.write()`를 단 한 번만 호출**한다. 이렇게 바꾸자 즉시 메시지 도착 확인됨(Stop 훅 실제
+트리거로 검증).
+
+```js
+const payload =
+  JSON.stringify({ type: "auth", token: TOKEN }) + "\n" +
+  JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n";
+socket.write(payload);
+```
+
+**설계 반영 필요**
+`voice/inject.js`(및 향후 비슷한 소켓 통신 코드)는 항상 여러 프레임을 하나의 `write()` 호출로
+합쳐 보내야 한다. 여러 번 나눠 쓰는 패턴은 겉보기엔 성공한 것처럼 보이지만 실제로는 실패하므로
+특히 위험하다(known-issues.md 6번의 whisper language 버그와 같은 "조용히 틀림" 유형).
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |
