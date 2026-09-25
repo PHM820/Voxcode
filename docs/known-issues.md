@@ -189,6 +189,57 @@ socket.write(payload);
 
 ---
 
+## 8. Python `subprocess.run(text=True)`로 Node 자식 프로세스의 한글 stdout/stderr를 읽으면 예외 발생 (해결됨)
+
+**증상**
+`voice/listener.py`가 `subprocess.run(["node", "inject.js", ...], capture_output=True, text=True)`로
+`inject.js`를 실행하면, `inject.js`가 한글 메시지(`전송 실패: ...` 등)를 stdout/stderr로 찍는
+순간 `UnicodeDecodeError: 'cp949' codec can't decode byte ...`가 별도 리더 스레드에서 발생하고,
+`result.stdout`/`result.stderr`가 `None`으로 남아 이후 `.strip()` 호출 시
+`'NoneType' object has no attribute 'strip'`로 2차 오류가 남(원인이 완전히 가려짐).
+
+**원인**
+`text=True`만 주면 Python이 OS 기본 인코딩(Windows에서는 로캘에 따라 cp949 등)으로 디코딩을
+시도한다. Node 프로세스는 UTF-8로 출력하므로 한글이 섞이면 깨진다. known-issues.md 6/7번과
+같은 "조용히 틀린 결과" 유형 — 에러 메시지가 진짜 원인(인코딩)을 안 보여주고 엉뚱한
+`NoneType` 오류로 나타나 원인 파악에 시간이 걸림.
+
+**해결 (검증됨)**
+`text=True` 대신 `encoding="utf-8", errors="replace"`를 명시한다:
+```python
+subprocess.run([...], capture_output=True, encoding="utf-8", errors="replace", timeout=10)
+```
+`voice/listener.py`의 `send_postback()`에 반영됨.
+
+**설계 반영 필요**
+Python에서 Node(또는 다른 UTF-8 출력 프로세스)를 subprocess로 부르는 모든 곳에서
+`text=True` 대신 `encoding="utf-8"`을 명시적으로 고정한다.
+
+---
+
+## 9. `.cmd` 파일을 LF로 저장하면 cmd.exe가 줄 단위 파싱을 깨뜨림 (해결됨)
+
+**증상**
+`.claude/verify.cmd`를 UTF-8 LF(유닉스 줄바꿈)로 저장한 뒤 `cmd /c verify.cmd`로 실행하면
+"'ect' is not recognized...", "'V_PY' is not recognized..." 처럼 명령어가 단어 중간에서
+잘려 완전히 엉뚱한 토큰으로 인식됨.
+
+**원인**
+Windows `cmd.exe`의 배치 파서는 CRLF(`\r\n`) 줄바꿈을 전제로 하며, LF만 있는 파일에서는
+줄 경계를 제대로 못 잡고 이전 줄과 다음 줄이 섞여 파싱된다. 에디터/도구가 기본으로 LF를
+쓰는 환경(WSL, 이 프로젝트의 Write 도구 등)에서 `.bat`/`.cmd` 파일을 만들면 재현된다.
+
+**해결 (검증됨)**
+`.cmd`/`.bat` 파일은 항상 CRLF로 저장한다. `unix2dos <file>` 또는 `sed -i 's/$/\r/' <file>`로
+변환 가능. `python voice/listener.py` 같은 `.py` 파일은 Python 인터프리터가 두 줄바꿈 모두
+허용하므로 영향 없음 — **배치 파일에서만** 문제.
+
+**설계 반영 필요**
+앞으로 `.cmd`/`.bat` 파일을 새로 만들거나 수정할 때는 저장 직후 `xxd`나 `file` 명령으로
+CRLF인지 확인하는 습관을 들인다(`file` 출력에 "CRLF line terminators"가 없으면 의심).
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |

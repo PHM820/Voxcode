@@ -26,8 +26,9 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`)·터미널 �
 | STT 엔진 래퍼 (whisper.cpp / pywhispercpp) | `voice/stt.*` | 예정 |
 | VAD (발화 감지, 바지-인용) | `voice/vad.*` | 예정 |
 | 호출어 감지 ("자비스", local-wake) | `voice/wakeword.*` | 예정 |
-| 상주 리스너 프로세스 (VAD+wakeword+STT 오케스트레이션 + 세션 소켓 postback) | `voice/listener.*` | 예정 |
-| 입력 주입 (Claude Code cross-session messaging 소켓 postback, 실패 시 pywinauto 폴백) | `voice/inject.js` | **검증 완료** |
+| 상주 리스너 프로세스 (TCP 서버+세션 상태 테이블+TTS 큐+라우팅, 실측 검증 완료) | `voice/listener.py` | **최소 버전 구현 완료** (2026-09-26) — VAD/wakeword/실시간 STT는 스텁(`route_and_send()`로 텍스트 직접 투입만 가능) |
+| TTS 엔진 래퍼 (sherpa-onnx, 한국어 모델 하드코딩) | `voice/tts.py` | **최소 버전 구현 완료** (2026-09-26) — 언어별 모델 교체는 TODO |
+| 입력 주입 (Claude Code cross-session messaging 소켓 postback, 실패 시 pywinauto 폴백) | `voice/inject.js` | **검증 완료**, 실제 세션 postback도 listener.py 통합 후 2026-09-26 재검증 성공 |
 | 음성모드 on/off 스킬 (`/voice-on`, `/voice-off`) | `.claude/skills/voice-mode/` | 예정 |
 | 설정 (음성 on/off, 호출어, 벨 병행 여부, 프로젝트 별칭) | `.claude/voice-settings.json` | 스키마 확정 (2026-09-26), 파일 자체는 예정 |
 | 설치 스크립트 (모델 다운로드, 호출어 온보딩 녹음 포함) | `setup.*` | 예정 |

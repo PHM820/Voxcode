@@ -49,6 +49,24 @@
 단일 세션(프로젝트 하나만 열어놓고 쓰는 경우)은 이 다이어그램에서 "세션이 하나뿐인 특수한 경우"로
 그대로 동작 — 별도 모드 분기 없이 자연스럽게 축소된다.
 
+## 구현 상태 (2026-09-26)
+
+`voice/listener.py` **최소 버전 구현 및 실측 검증 완료**. 구현/검증된 것:
+- 로컬 TCP 서버(127.0.0.1:8765) — asyncio 기반
+- 세션별 상태 테이블(dict, `SessionTable`) — `upsert_from_notify`, `mark_command_sent`
+- 완료 알림 → TTS 재생 큐(`TtsQueue`, threading) — "{프로젝트명}, {요약}" 형식, 여러 알림
+  동시 도착 시 순서대로 순차 재생(실측: 3개 세션 가짜 알림을 순서대로 정확히 재생 확인)
+- 세션 라우팅 규칙 ①~④ 전부(`route_command`), "멈춰 {프로젝트명}" 브로드캐스트/무시 규칙
+  전부(`parse_stop_command`, `route_and_send`) — 유닛 테스트로 검증
+- `voice/inject.js` subprocess 호출(`send_postback`) — 가짜 세션(존재하지 않는 named pipe)
+  대상으로는 `connect ENOENT`로 정확히 실패, **이 세션 자신의 실제
+  `CLAUDE_CODE_MESSAGING_SOCKET`/`TOKEN`으로도 실제 postback 성공 확인**(returncode 0,
+  "전송 완료")
+- `voice/tts.py`로 TTS 분리(sherpa-onnx, 한국어 모델 하드코딩) — 합성 실측 성공
+
+범위 밖(스텁, TODO 주석으로 표시됨): 실시간 마이크 VAD/wakeword/STT. 대신 `route_and_send(table, text)`
+함수로 텍스트를 직접 넣어 라우팅 로직만 독립적으로 검증 가능.
+
 ## 프로세스 경계와 이유
 
 | 경계 | 이유 |
@@ -131,7 +149,7 @@
 | 음성 명령을 여러 열린 세션 중 어디로 라우팅할지 | **규칙 확정** (2026-09-26). 위 "세션 라우팅" 참고 — 프로젝트명 언급 우선, 없으면 최근 완료 세션 |
 | 여러 세션이 동시에 완료됐을 때 TTS 재생 큐 순서와 구분 멘트 문구 | **형식 확정**: "{프로젝트명}, {요약}", 순서는 도착 순(선착순)으로 충분 — 우선순위 개념은 실사용 후 필요하면 추가 |
 | 로컬 TCP 소켓 메시지에 세션 식별자를 어떤 형태로 담을지 | **확정**: 별도 uuid 없이 세션의 `CLAUDE_CODE_MESSAGING_SOCKET` 경로 자체를 키로 사용 |
-| 로컬 TCP 소켓 포트 번호, 메시지 포맷(JSON 스키마 필드 이름) | 미정 — 필드 구성(세션 식별자/프로젝트명/텍스트)은 정해졌으나 정확한 키 이름·포트 번호는 구현 시 확정 |
+| 로컬 TCP 소켓 포트 번호, 메시지 포맷(JSON 스키마 필드 이름) | **확정** (2026-09-26, `voice/listener.py` 최소 버전 구현 시): 포트 `8765`(127.0.0.1 고정). 메시지 스키마: `{"event": "notify"｜"command", "session_id": "<CLAUDE_CODE_MESSAGING_SOCKET 경로>", "project_name": "<cwd 폴더명>", "text": "<요약/명령 텍스트>", "socket_path": "<postback 대상 소켓>", "token": "<postback용 토큰>"}`. `session_id`와 `socket_path`는 현재는 같은 값이지만 의미가 달라(테이블 키 vs 실제 연결 주소) 필드를 분리해 유지. 상세: `voice/listener.py` 상단 주석 |
 | 작업 완료 시 Claude Code 공식 터미널 벨을 음성 요약과 병행 재생할지 여부 | **설정 키 확정**: `voice-settings.json`의 `play_official_bell`(기본 `true`) |
 | 받아쓰기 모드 진입/종료 시 사용자 피드백(신호음? 짧은 TTS?) | 미정 |
 | 상주 프로세스 시작/종료 방법 | **방식 확정** (2026-09-26). 아래 "설정 파일과 프로세스 생명주기" 참고 |
