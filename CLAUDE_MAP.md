@@ -29,6 +29,7 @@ Claude Code의 공식 스크린리더 모드(`--ax-screen-reader`) 위에 얹는
 | 검증 | `.claude/verify.cmd` | 이번 harness에서 생성 |
 | 결정 기록 | `docs/decisions.md` | 이번 harness에서 생성 |
 | 설치 중 겪은 문제·해결 기록 (setup 스크립트 자동화 대상 목록) | `docs/known-issues.md` | 2026-09-25 실측 세션에서 생성. eunjeon 컴파일 문제는 미해결 |
+| 전체 아키텍처 설계 (프로세스 구조, 이벤트별 데이터 흐름, 미정 항목 목록) | `docs/architecture.md` | 2026-09-25 작성 |
 
 ## 스택 (확정)
 - 훅 실행: Claude Code Hooks (settings.json에 등록, Stop/Notification 이벤트)
