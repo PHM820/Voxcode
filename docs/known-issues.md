@@ -326,6 +326,111 @@ known-issues.md 10번(cmd -c 인자 한글 깨짐)과 같은 패턴: **stdin을 
 
 ---
 
+## 13. Python 훅이 `print()`/`sys.stdout.write()`로 한글 JSON을 출력하면 Claude Code가 못 읽음 (해결됨)
+
+**증상**
+`hooks/on-user-prompt-submit.py`가 `hookSpecificOutput.additionalContext`에 한글 문자열을 담아
+`print(json.dumps(payload, ensure_ascii=False))`(또는 `sys.stdout.write(...)`)로 출력하면,
+직접 실행 시 콘솔에 한글이 깨져 보이는 것과 별개로 **stdout 자체가 Windows 콘솔 코드페이지로
+인코딩되어 나가 UTF-8 JSON 파싱이 실패**한다.
+
+**원인**
+known-issues.md 8/10번과 방향만 반대인 같은 계열 문제 — 그것들은 "다른 프로세스의 UTF-8
+출력을 읽을 때" 깨졌고, 이건 "이 프로세스 자신이 stdout으로 쓸 때" Python이 기본으로
+`sys.stdout`의 인코딩을 OS 로캘(한국어 Windows면 cp949)에 맞추기 때문에 깨진다. Claude Code는
+훅의 stdout을 UTF-8 JSON으로 기대하므로 불일치가 생김.
+
+**해결 (검증됨)**
+`sys.stdout.write()`/`print()` 대신 바이트를 직접 쓴다:
+```python
+sys.stdout.buffer.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+```
+`hooks/on-user-prompt-submit.py`에 반영, `enabled: true/false` 두 상태 모두 실제 실행 후
+UTF-8로 파일 저장해 파싱 성공까지 확인(콘솔에 직접 출력하면 여전히 깨져 보이나 이건 터미널
+표시 문제일 뿐 실제 바이트 내용과는 무관함을 별도 확인).
+
+**설계 반영 필요**
+Claude Code 훅이 stdout으로 (한글이 섞일 수 있는) JSON을 출력할 때는 `print`/`sys.stdout.write`
+대신 항상 `sys.stdout.buffer.write(...encode("utf-8"))`로 직접 바이트를 쓴다. known-issues.md
+8번의 "자식 프로세스 출력 읽기"용 `encoding="utf-8"` 규칙과 짝을 이루는, "이 프로세스 출력
+쓰기"용 규칙으로 함께 기억할 것.
+
+---
+
+## 14. `lwake`(local-wake)의 오디오 임베딩 모델은 0.775초(16kHz 기준 12400샘플) 미만 오디오에서 크래시함 — 우리 코드는 안전하지만 알아둘 것
+
+**상태**
+`voice/wakeword.py`의 실제 동작을 마이크 없이 검증하려고 `lwake.compare()`를 TTS 합성
+오디오(0.73초 "자비스")로 직접 호출했더니 `onnxruntime`이 `Conv_18` 노드에서
+`Invalid input shape: {2,1}`로 크래시함(재현 확인). 순수 노이즈로 같은 길이를 테스트하면
+크래시하지 않아, 길이 자체가 아니라 **"패딩 안 된 짧은 오디오"**가 원인임을 확인.
+
+**원인**
+`lwake` 소스(`lwake/record.py`)를 읽어보니 `MIN_SAMPLES = 12400`(16kHz 기준 0.775초)
+상수가 있고, `record()`가 항상 `pad_audio(audio, MIN_SAMPLES)`로 이 길이 이상 보장한 뒤
+저장한다 — 즉 **정상적인 `onboard()`(참조 녹음) 경로는 항상 안전**하다. 문제는 이 패딩을
+거치지 않은 오디오(예: 우리처럼 TTS로 직접 합성한 파일, 혹은 사용자가 직접 준비한
+아주 짧은 wav)를 `compare()`나 `extract_embedding_features()`에 직접 넘길 때만 발생.
+
+**우리 프로젝트에 대한 영향 — 없음(확인됨)**
+`voice/wakeword.py`는 `lwake.record()`(참조 녹음, 항상 패딩됨)와 `lwake.listen()`(실시간
+스트림, 2초 버퍼 고정이라 항상 12400샘플보다 큼)만 쓰고 `compare()`를 직접 호출하지
+않는다 — 현재 코드 경로는 안전함이 확인됨.
+
+**알아둘 점 (`lwake.listen()`의 조용한 실패 모드)**
+`lwake/listen.py`의 `load_support_set()`은 참조 파일 로딩 실패를 예외로 띄우지 않고
+`_logger.error()`로만 남기고 조용히 건너뛴다. 만약 어떤 경로로든 손상되거나 너무 짧은
+참조 wav가 `models/wakeword/<wake_word>/`에 들어가면, `listen()`은 참조 세트가
+비어있다는 걸 로그로만 남기고 **감지 자체를 시작 안 한 채 조용히 return**한다 — 사용자는
+"호출어를 불렀는데 반응이 없다"로만 체감하고 원인을 알기 어려움. 실제 마이크 검증
+시점에 이 로그(`_logger`, 이름 `"local-wake"`)를 같이 확인하도록 다음 세션에 남겨둘 것.
+
+**설계 반영 필요**
+`voice/wakeword.py`나 그 외 어디서든 `lwake.compare()`/`extract_embedding_features()`를
+새로 직접 호출하는 코드를 추가할 때는, 넘기는 오디오가 12400샘플(16kHz 기준 0.775초)
+이상인지 미리 확인하거나 `lwake.record()`/`pad_audio()`를 거치게 한다.
+
+---
+
+## 15. whisper가 완전한 무음/짧은 노이즈에서도 그럴듯한 텍스트를 "환각"으로 만들어냄 — 받아쓰기 라우팅에 위험 (미해결, 완화책만)
+
+**상태**
+`voice/stt.py`의 `SttEngine.transcribe()`에 완전한 무음(1초, 전부 0) 오디오를 넣었더니
+크래시 없이 `'[두 번째]'`라는 **실제로 존재하지 않는 발화의 텍스트**를 반환함. 짧은
+노이즈(0.2~0.5초)에서도 `'-그러니까.'` 같은 환각 텍스트가 나옴 — 둘 다 whisper 계열
+모델의 잘 알려진 특성("hallucination", 무음 구간에서 학습 데이터의 흔한 짧은 구절을
+그럴듯하게 지어내는 경향).
+
+**우리 프로젝트에 대한 위험**
+`voice/listener.py`의 `MicLoop._dictation_cycle()`은 `detector.has_speech_started`
+(VAD가 발화 시작을 감지했는지)로 "무음만 녹음됨"을 어느 정도 거르지만, **VAD가 배경
+소음(예: 키보드 타이핑, 주변 소리)을 발화로 오인해서 넘어가면 그 뒤 whisper가 환각
+텍스트를 만들고, 그 텍스트가 `text.strip()`만 통과하면 그대로 `route_and_send()`로
+넘어가 엉뚱한 세션에 엉뚱한 명령이 전달될 수 있다.** 크래시가 아니라 "조용히 틀린
+동작"이라 known-issues.md의 기존 패턴들(6/8/10/13번)과 같은 계열의 위험.
+
+**완화책 조사 — `probability` 필드는 이 빌드에서 쓸 수 없음(실측 확인)**
+`pywhispercpp` 세그먼트 객체가 `probability` 속성을 노출하길래(`no_speech_prob`은 없음)
+신뢰도 기반 필터링에 쓸 수 있는지 확인차 무음(환각 사례)과 정상 발화 둘 다에서 값을
+직접 찍어봄 — **둘 다 `nan`으로 나옴**. 즉 지금 설치된 pywhispercpp 버전에서는 세그먼트
+확률이 실제로 채워지지 않아, 이 필드로 환각을 걸러내는 방법은 **막힘 확인**(더 새/다른
+버전이면 될 수도 있으나 지금 버전 기준으로는 아님).
+
+**남은 완화책 후보 (미구현 — 설계 결정 필요)**
+- 아주 짧은 인식 결과(예: 2글자 미만)를 의심하고 재확인하는 휴리스틱(단순하지만 "그러니까."
+  같은 짧은 환각도 못 거를 수 있음)
+- VAD 임계값(`threshold=0.5`)을 보수적으로 올려 배경 소음 오인을 줄이는 것(실제 작은
+  목소리를 놓칠 위험과 트레이드오프)
+- pywhispercpp를 다른 버전으로 바꾸거나 원본 whisper.cpp C API를 직접 호출해
+  `no_speech_prob`을 받는 방법(패키지 교체급 변경이라 범위 밖)
+
+**설계 반영 필요**
+지금 당장 코드를 바꾸지 않음(임계값 튜닝·라이브러리 교체는 실제 마이크로 사람이 말하며
+조정해야 하는 "큰 결정" 영역) — 다음에 실제 마이크 검증을 할 때 이 위험을 염두에 두고
+휴리스틱 필터 채택 여부를 사용자와 논의할 것.
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |

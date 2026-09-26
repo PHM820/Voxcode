@@ -1,4 +1,4 @@
-# eyes-free-coding 상주 프로세스(voice/listener.py) 의존성.
+# Voxcode(구 eyes-free-coding) 상주 프로세스(voice/listener.py) 의존성.
 # 버전을 정확히 고정(==)하지 않는다 — known-issues.md 2번(MeloTTS 시절 구버전 고정이
 # Python 3.12용 사전빌드 wheel을 못 찾아 소스 컴파일로 빠졌던 문제)의 교훈. 최소 버전만
 # 지정해 pip이 그 시점 최신 사전빌드 wheel을 고르게 둔다.
