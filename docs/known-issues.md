@@ -431,6 +431,47 @@ Claude Code 훅이 stdout으로 (한글이 섞일 수 있는) JSON을 출력할 
 
 ---
 
+## 16. 이 PC의 Windows MME 오디오 드라이버가 세션 도중 갑자기 잠겨 마이크 입력이 전부 막힘 (미해결, 재부팅 대기 중)
+
+**증상**
+`sounddevice.InputStream()`으로 마이크를 여는 모든 시도가
+`PortAudioError: Unanticipated host error [PaErrorCode -9999]: 'Undefined external error.'
+[MME error 1]`로 실패. 정확히 같은 세션 안에서, 같은 코드(`lwake.record()`,
+`WakeWordDetector.listen_blocking()`)로 4~5차례 마이크 입력이 **정상 성공**한 직후부터
+(2026-09-26 오후 11:37 이후로 추정) 갑자기 이 에러로 전환됨.
+
+**진단 순서 (모두 실측, 원인 특정은 실패)**
+1. 완전히 새 프로세스(Bash 세션, PowerShell 세션 각각)에서도 재현 — 프로세스 상태
+   문제가 아님을 확정.
+2. `sounddevice._terminate()`/`_initialize()`로 PortAudio 자체를 재초기화해도 재현.
+3. WASAPI 백엔드(48kHz 네이티브)로 전환 시도 → 다른 에러("Invalid device")로 바뀜,
+   근본 해결 아님.
+4. WDM-KS 백엔드(16kHz 네이티브 장치)로 전환 시도 → "Blocking API not supported yet"
+   — 이건 이 백엔드 자체의 근본 제약(우리 코드가 쓰는 `stream.read()` blocking 방식을
+   WDM-KS가 지원 안 함)이라 우회 불가.
+5. 웹 검색으로 이 정확한 에러의 알려진 원인 확인 — 가장 흔한 원인은 "Windows 마이크
+   프라이버시 권한 꺼짐"이지만, 설정 화면 스크린샷으로 이미 켜져 있고 Python이 실제로
+   여러 차례 접근한 기록까지 확인되어 기각.
+6. 관리자 권한으로 `Restart-Service -Name "AudioEndpointBuilder","Audiosrv" -Force`
+   실행 → 서비스는 정상적으로 재시작됨(`Get-Service`로 `Running` 확인)이나 에러 그대로.
+7. 마이크 프라이버시 토글을 껐다 켜기 → 에러 그대로.
+
+**결론**
+코드나 이 프로젝트의 버그가 아님이 확정됨(같은 세션 안에서 같은 코드가 이미 여러 번
+성공했었음). Windows/드라이버 레벨에서 뭔가 잠긴 상태로 추정되며, 서비스 재시작과
+권한 재설정 둘 다로도 안 풀렸다 — 남은 표준 해결책은 **재부팅**뿐(다른 사용자들의
+같은 에러 검색 결과에서도 "권한 변경 후 재부팅해야 실제 적용되는 경우가 있다"는
+언급이 있었음). 사용자와 합의해 재부팅 후 다음 세션에서 재시도하기로 하고 종료.
+
+**다음 세션에서 할 일**
+재부팅 후 `python -c "import sounddevice as sd; sd.InputStream(samplerate=16000,
+channels=1).__enter__()"` 같은 최소 재현으로 먼저 스트림이 열리는지부터 확인 —
+열리면 받아쓰기(`_dictation_cycle`) 실측 검증을 이어서 진행. 재부팅 후에도 같은 에러가
+나면 이 항목을 "재부팅으로도 해결 안 됨"으로 갱신하고 다른 원인(오디오 드라이버
+재설치, Windows 업데이트 후 회귀 등)을 조사할 것.
+
+---
+
 ## 참고: 최종 venv 용량 (이 세션 실측치, 문제 있는 상태 포함)
 
 | 시점 | venv 용량 |
