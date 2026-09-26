@@ -39,8 +39,11 @@ function injectMessage(text) {
           message: { role: "user", content: text },
         }) +
         "\n";
-      socket.write(payload);
-      finish(null);
+      // write()는 비동기다 — 콜백 없이 바로 finish()하면 실제 전송(커널 버퍼로
+      // flush)이 끝나기 전에 socket.end()가 불려 데이터가 잘릴 위험이 있다
+      // (known-issues.md 7번과 같은 계열 위험, 2026-09-26 밤모드 코드 리뷰로 발견).
+      // write()의 콜백은 데이터가 실제로 flush된 뒤 호출되므로 그 시점에 finish한다.
+      socket.write(payload, () => finish(null));
     });
 
     socket.on("error", (err) => finish(err));

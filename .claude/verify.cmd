@@ -11,7 +11,7 @@ if not exist "%VENV_PY%" (
 )
 
 echo === voice/listener.py syntax + import check ===
-"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; import voice.config; print('import OK')"
+"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; import voice.config; import voice.languages; import voice.stt; import voice.vad; import voice.wakeword; print('import OK')"
 if errorlevel 1 (
     echo VERIFY FAILED: import error
     exit /b 1

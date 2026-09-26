@@ -49,8 +49,10 @@ def main() -> int:
     except Exception:
         payload = {}
 
-    # Notification 이벤트는 last_assistant_message가 없다 — message 필드(실측
-    # 확인)를 우선 쓰고, 없으면 title을 보조로, 둘 다 없으면 조용히 종료한다.
+    # Notification 이벤트는 last_assistant_message가 없다 — message 필드를
+    # 우선 쓰고(실제 stdin 필드 구성은 파일 상단 주석·known-issues.md 11번 참고,
+    # 아직 로그로 실측 확인되지 않은 추정임), 없으면 title을 보조로, 둘 다
+    # 없으면 조용히 종료한다.
     text = payload.get("message") or payload.get("title") or ""
     if not text:
         return 0
