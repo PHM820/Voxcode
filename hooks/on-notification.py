@@ -23,6 +23,9 @@ import socket
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from voice.config import is_enabled  # noqa: E402
+
 HOST = "127.0.0.1"
 PORT = 8765
 # 초. hooks/on-stop.py와 동일한 이유로 짧게 고정 — 이 환경에서는 리스너 미기동 시
@@ -55,6 +58,9 @@ def main() -> int:
     cwd = payload.get("cwd") or os.getcwd()
     if _is_delegate_worker(cwd):
         # docs/architecture.md "/delegate, /delegate-all 서브에이전트와의 관계" 참고.
+        return 0
+
+    if not is_enabled():
         return 0
 
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")

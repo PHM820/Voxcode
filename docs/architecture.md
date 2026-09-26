@@ -198,7 +198,7 @@
 
 | 키 | 의미 | 기본값 |
 |---|---|---|
-| `enabled` | 음성모드 전역 on/off. `/voice-on`·`/voice-off`가 토글 | `true` |
+| `enabled` | 음성모드 전역 on/off. `/voice-on`·`/voice-off`가 토글 | `false` (2026-09-27 정정 — 설치 직후 기본값이 `true`면 `/voice-on`을 켠 적 없어도 이미 켜진 것과 같아 스킬의 존재 의미가 없어짐) |
 | `wake_word` | 호출어 (local-wake 온보딩 대상) | `"자비스"` |
 | `language` | whisper STT 언어 코드 — 항상 명시 필요(known-issues.md 6번) | `"ko"` |
 | `play_official_bell` | 완료 시 공식 터미널 벨을 음성 요약과 병행 재생할지 | `true` |

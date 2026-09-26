@@ -23,6 +23,9 @@ import socket
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from voice.config import is_enabled  # noqa: E402
+
 HOST = "127.0.0.1"
 PORT = 8765
 # 초. 훅이 Claude Code 응답을 지연시키면 안 되므로 짧게 고정.
@@ -66,6 +69,12 @@ def main() -> int:
         # /delegate, /delegate-all의 하위 작업자(워커) 세션 — 사용자가 직접
         # /voice-on을 켠 적 없는 세션이므로 음성 알림을 내지 않는다.
         # docs/architecture.md "/delegate, /delegate-all 서브에이전트와의 관계" 참고.
+        return 0
+
+    if not is_enabled():
+        # /voice-on을 실행한 적 없거나 /voice-off로 끈 상태 — TCP 시도조차
+        # 하지 않는다(listener.py가 안 떠 있을 게 뻔한데 매번 타임아웃까지
+        # 기다릴 이유가 없다).
         return 0
 
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")

@@ -11,7 +11,7 @@ if not exist "%VENV_PY%" (
 )
 
 echo === voice/listener.py syntax + import check ===
-"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; print('import OK')"
+"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; import voice.config; print('import OK')"
 if errorlevel 1 (
     echo VERIFY FAILED: import error
     exit /b 1
@@ -32,9 +32,12 @@ if errorlevel 1 (
 )
 
 echo === hooks/on-stop.py, hooks/on-notification.py syntax + import check ===
-"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import ast; ast.parse(open('hooks/on-stop.py', encoding='utf-8').read()); ast.parse(open('hooks/on-notification.py', encoding='utf-8').read()); print('import OK')"
+REM NOTE: giving the hook stdin via pipe/redirect directly in this batch file
+REM broke execution silently past this point (found 2026-09-27). Moved to a
+REM separate .py file that uses subprocess instead - see verify_hooks.py.
+"%VENV_PY%" .claude\verify_hooks.py
 if errorlevel 1 (
-    echo VERIFY FAILED: hooks syntax error
+    echo VERIFY FAILED: hooks check failed
     exit /b 1
 )
 

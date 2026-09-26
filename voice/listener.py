@@ -560,6 +560,7 @@ class ListenerServer:
         self.host = host
         self.port = port
         self._server: Optional[asyncio.base_events.Server] = None
+        self._shutdown_requested = False
 
     async def handle_client(self, reader: asyncio.StreamReader,
                              writer: asyncio.StreamWriter) -> None:
@@ -590,6 +591,17 @@ class ListenerServer:
                 self.table.upsert_from_notify(session_id, project_name, socket_path, token)
                 self.tts_queue.enqueue(project_name, text)
                 writer.write(json.dumps({"ok": True}).encode())
+            elif event == "shutdown":
+                # /voice-off가 보내는 종료 신호. session_id 등은 형식만 맞으면
+                # 되고 내용은 검사하지 않는다(로컬 127.0.0.1 전용이라 이 정도로
+                # 충분 — architecture.md "상주 프로세스 생명주기" 참고).
+                writer.write(json.dumps({"ok": True}).encode())
+                await writer.drain()
+                writer.close()
+                self._shutdown_requested = True
+                if self._server is not None:
+                    self._server.close()
+                return
             else:
                 writer.write(json.dumps({"ok": False, "error": f"unknown event: {event}"}).encode())
 
@@ -648,15 +660,18 @@ def main():
 
     async def _main():
         await server.start()
-        print(f"[listener] 대기 중... (Ctrl+C로 종료)")
+        print(f"[listener] 대기 중... (Ctrl+C 또는 /voice-off로 종료)")
         # TODO: 실시간 마이크 VAD/wakeword/STT 루프는 이 최소 버전 범위 밖.
-        # TODO: 상주 프로세스 시작/종료 방법(/voice-on, /voice-off)은 미정 (architecture.md).
-        await server._server.serve_forever()
+        try:
+            await server._server.serve_forever()
+        except asyncio.CancelledError:
+            pass
 
     try:
         asyncio.run(_main())
     except KeyboardInterrupt:
-        print("\n[listener] 종료")
+        pass
+    print("\n[listener] 종료")
 
 
 if __name__ == "__main__":
