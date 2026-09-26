@@ -5,10 +5,11 @@
 docs/architecture.md "2. 권한 요청 → 알림" 참고. 구조는 hooks/on-stop.py와
 동일 — 차이는 stdin JSON에서 추출하는 필드뿐이다.
 
-Notification 훅 stdin의 실제 필드는 2026-09-26 이 프로젝트에서 실측 확인:
-docs/decisions.md 참고. 공통 필드(session_id, transcript_path, cwd,
-permission_mode, hook_event_name) 외에 `message` 필드에 사람이 읽을 안내
-문구가 담겨 온다.
+Notification 훅 stdin의 정확한 필드 구성은 **아직 로그로 실측 확인되지 않았다**
+(docs/known-issues.md 11번 미해결 — 세션의 permission_mode가 auto이면 알림
+자체가 발생하지 않아 재현이 안 됨). 아래 `message`/`title` 선택은 Claude Code
+문서·이전 세션 기록에 근거한 추정이며, 실제 stdin 로그로 검증되면 이 주석과
+known-issues.md 11번을 함께 갱신할 것.
 
 절대 원칙은 hooks/on-stop.py와 동일: 이 훅은 Claude Code 흐름을 절대 막지
 않는다. 소켓 연결 실패(상주 프로세스 미기동)는 폴백 없이 조용히 삼키고
@@ -29,6 +30,13 @@ PORT = 8765
 CONNECT_TIMEOUT = 0.3
 
 
+def _is_delegate_worker(cwd: str) -> bool:
+    """`/delegate`, `/delegate-all`의 작업자(워커) 세션인지 판별.
+    hooks/on-stop.py의 같은 이름 함수와 동일 로직 — 판단 근거는 그쪽 주석 참고.
+    """
+    return "\\.claude\\worktrees\\" in cwd or "/.claude/worktrees/" in cwd
+
+
 def main() -> int:
     try:
         # hooks/on-stop.py와 동일한 이유로 바이트로 읽어 UTF-8로 직접 디코딩한다
@@ -44,11 +52,15 @@ def main() -> int:
     if not text:
         return 0
 
+    cwd = payload.get("cwd") or os.getcwd()
+    if _is_delegate_worker(cwd):
+        # docs/architecture.md "/delegate, /delegate-all 서브에이전트와의 관계" 참고.
+        return 0
+
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
     token = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
     session_id = socket_path
 
-    cwd = payload.get("cwd") or os.getcwd()
     project_name = Path(cwd).name
 
     message = {

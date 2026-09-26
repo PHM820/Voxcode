@@ -34,6 +34,16 @@ PORT = 8765
 CONNECT_TIMEOUT = 0.3
 
 
+def _is_delegate_worker(cwd: str) -> bool:
+    """`/delegate`, `/delegate-all`의 작업자(워커) 세션인지 판별.
+
+    작업자는 항상 `.claude/worktrees/<이름>/` 아래 독립 복사본에서 실행된다
+    (~/.claude/skills/delegate/SKILL.md, harness 스킬의 `.git/info/exclude`
+    관례와 동일 경로). 관리자 세션은 이 경로 밖에서 돈다.
+    """
+    return "\\.claude\\worktrees\\" in cwd or "/.claude/worktrees/" in cwd
+
+
 def main() -> int:
     try:
         # sys.stdin.read()는 Windows에서 로케일 코드페이지(cp949 등)로 디코딩을
@@ -51,13 +61,19 @@ def main() -> int:
         # 요약할 내용이 없으면 알릴 것도 없으니 조용히 종료.
         return 0
 
+    cwd_for_check = payload.get("cwd") or os.getcwd()
+    if _is_delegate_worker(cwd_for_check):
+        # /delegate, /delegate-all의 하위 작업자(워커) 세션 — 사용자가 직접
+        # /voice-on을 켠 적 없는 세션이므로 음성 알림을 내지 않는다.
+        # docs/architecture.md "/delegate, /delegate-all 서브에이전트와의 관계" 참고.
+        return 0
+
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
     token = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "")
     # session_id는 architecture.md 결정대로 별도로 만들지 않고 소켓 경로 자체를 그대로 쓴다.
     session_id = socket_path
 
-    cwd = payload.get("cwd") or os.getcwd()
-    project_name = Path(cwd).name
+    project_name = Path(cwd_for_check).name
 
     message = {
         "event": "notify",
