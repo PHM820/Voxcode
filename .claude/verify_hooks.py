@@ -16,7 +16,7 @@ import sys
 
 VENV_PY = sys.executable
 
-for hook in ("hooks/on-stop.py", "hooks/on-notification.py"):
+for hook in ("hooks/on-stop.py", "hooks/on-notification.py", "hooks/on-user-prompt-submit.py"):
     result = subprocess.run(
         [VENV_PY, hook],
         input="{}",
