@@ -15,7 +15,9 @@ from typing import Any
 DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "wake_word": "자비스",
-    "language": "ko",
+    "language": "en",  # 코드 경로의 fallback일 뿐 - 실제 최초 실행은 /voice-on 온보딩이 "지금 세션이 대화 중인 언어"를 추천해 결정(2026-09-26). 온보딩을 거치면 이 값이 그 언어로 덮어써짐
+    "voice_id": None,  # 온보딩에서 고른 목소리(voice/languages.py의 VoiceOption.id). None이면 tts.py가 레거시 한국어 기본값으로 폴백
+    "onboarded": False,  # /voice-on 최초 실행에서 언어+목소리 선택을 마쳤는지
     "play_official_bell": True,
     "project_alias": None,
 }

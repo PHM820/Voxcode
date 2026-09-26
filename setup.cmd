@@ -1,5 +1,5 @@
 @echo off
-REM eyes-free-coding installer.
+REM Voxcode (formerly eyes-free-coding) installer.
 REM What this does: create venv, install Python deps, download TTS/STT models.
 REM Known issues this script does NOT auto-fix (see docs/known-issues.md #1):
 REM   pip SSL certificate errors caused by antivirus SSL inspection (Kaspersky etc).
@@ -8,10 +8,13 @@ setlocal enabledelayedexpansion
 
 set VENV_DIR=.venv
 set MODELS_DIR=models
-set TTS_MODEL_DIR=%MODELS_DIR%\tts\vits-mimic3-ko_KO-kss_low
-set TTS_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-mimic3-ko_KO-kss_low.tar.bz2
 set STT_MODEL_DIR=%MODELS_DIR%\stt
 set STT_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+REM TTS 모델은 언어 선택에 따라 다르므로 하드코딩하지 않는다. setup.cmd 시점엔
+REM 아직 /voice-on 온보딩(대화 언어 추천 방식, 2026-09-26 결정)을 거치지 않았으므로
+REM 3/4 단계는 영어를 임시로 받아 둘 뿐 - 실제 사용 언어는 /voice-on 최초 실행 때
+REM 확정되고, 그 스킬이 같은 다운로드 스크립트를 그 언어의 voice_id로 다시 호출한다
+REM (voice/languages.py 참고).
 
 echo === 1/4: Python venv ===
 if exist "%VENV_DIR%\Scripts\python.exe" (
@@ -49,27 +52,13 @@ echo   deleting %VENV_DIR% undoes it completely.
 exit /b 1
 :pip_ok
 
-echo === 3/4: TTS model (Korean, ~64MB) ===
-if exist "%TTS_MODEL_DIR%\ko_KO-kss_low.onnx" (
-    echo Already downloaded: %TTS_MODEL_DIR%
-) else (
-    if not exist "%MODELS_DIR%\tts" mkdir "%MODELS_DIR%\tts"
-    echo Downloading %TTS_MODEL_URL%
-    "%VENV_PY%" -c "import urllib.request; urllib.request.urlretrieve('%TTS_MODEL_URL%', 'models/tts/_tts.tar.bz2')"
-    if errorlevel 1 (
-        echo SETUP FAILED: TTS model download failed. Check your internet connection
-        echo and retry, or download manually from:
-        echo   %TTS_MODEL_URL%
-        exit /b 1
-    )
-    "%VENV_PY%" -c "import tarfile; tarfile.open('models/tts/_tts.tar.bz2').extractall('models/tts')"
-    del "models\tts\_tts.tar.bz2"
-    if not exist "%TTS_MODEL_DIR%\ko_KO-kss_low.onnx" (
-        echo SETUP FAILED: TTS model extracted but expected file not found:
-        echo   %TTS_MODEL_DIR%\ko_KO-kss_low.onnx
-        echo The archive layout may have changed upstream - check %MODELS_DIR%\tts manually.
-        exit /b 1
-    )
+echo === 3/4: TTS model (default: English, ~64MB) ===
+echo Other languages/voices are downloaded later by the /voice-on onboarding
+echo (first run) - see voice\languages.py for the full list.
+"%VENV_PY%" .claude\download_tts_model.py --language en
+if errorlevel 1 (
+    echo SETUP FAILED: see error above.
+    exit /b 1
 )
 
 echo === 4/4: STT model (whisper.cpp base, ~147MB) ===

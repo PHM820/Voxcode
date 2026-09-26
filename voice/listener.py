@@ -58,6 +58,12 @@ class SessionState:
     token: str
     last_notify_at: float = 0.0
     last_command_at: float = 0.0
+    # "멈춰" 이후 재라우팅 문제의 A안(docs/architecture.md "'멈춰' 이후 재라우팅
+    # 문제와 A안" 절). 세션이 스스로 /voice-detach를 호출하면 False, /voice-attach
+    # 또는 프로젝트명 직접 호출로 다시 True. 테이블에서 삭제하지 않고 플래그만
+    # 바꾸는 이유: 규칙 ①(프로젝트명 직접 호출)이 active 무관하게 항상 즉시
+    # 재활성화할 수 있어야 하기 때문 — 삭제하면 그 즉시 재활성화가 불가능해진다.
+    active: bool = True
 
 
 class SessionTable:
@@ -69,7 +75,12 @@ class SessionTable:
 
     def upsert_from_notify(self, session_id: str, project_name: str,
                             socket_path: str, token: str) -> SessionState:
-        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성)하고 last_notify_at 찍기."""
+        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성)하고 last_notify_at 찍기.
+
+        기존에 detach된 세션이라도 실제로 완료 알림을 다시 보냈다는 건 사용자가
+        그 프로젝트에 새로 뭔가를 시켰다는 뜻이므로 active를 True로 되돌린다
+        ("'멈춰' 이후 재라우팅 문제와 A안" 절의 "해제 조건" 참고).
+        """
         with self._lock:
             st = self._sessions.get(session_id)
             if st is None:
@@ -86,6 +97,7 @@ class SessionTable:
                 st.socket_path = socket_path
                 st.token = token
             st.last_notify_at = time.time()
+            st.active = True
             return st
 
     def mark_command_sent(self, session_id: str) -> None:
@@ -94,29 +106,53 @@ class SessionTable:
             if st is not None:
                 st.last_command_at = time.time()
 
+    def mark_detached(self, session_id: str) -> bool:
+        """/voice-detach: 세션이 스스로 라우팅 후보에서 빠짐. 찾았으면 True."""
+        with self._lock:
+            st = self._sessions.get(session_id)
+            if st is None:
+                return False
+            st.active = False
+            return True
+
+    def mark_attached(self, session_id: str, project_name: str,
+                       socket_path: str, token: str) -> SessionState:
+        """/voice-attach: notify와 동일 로직(재사용) — 세션 정보를 갱신하고
+        active=True로 되돌린다. 별도 이벤트지만 upsert 의미가 같아 위임한다."""
+        return self.upsert_from_notify(session_id, project_name, socket_path, token)
+
     def all_sessions(self) -> list[SessionState]:
         with self._lock:
             return list(self._sessions.values())
 
     def find_by_project_prefix(self, spoken_text: str) -> Optional[SessionState]:
-        """발화가 프로젝트명으로 '시작'하면 그 세션 반환 (라우팅 규칙 ①)."""
+        """발화가 프로젝트명으로 '시작'하면 그 세션 반환 (라우팅 규칙 ①).
+
+        active 무관하게 항상 찾고, 찾으면 그 즉시 재활성화한다 — "프로젝트명을
+        직접 부르면 언제든 즉시 부활"이 사용자 재량 원칙과 일치("'멈춰' 이후
+        재라우팅 문제와 A안" 절).
+        """
         with self._lock:
             for st in self._sessions.values():
                 if spoken_text.startswith(st.project_name):
+                    st.active = True
                     return st
         return None
 
     def most_recent_by_notify(self) -> Optional[SessionState]:
-        sessions = self.all_sessions()
+        """규칙 ②: active인 세션만 후보로 삼는다 — detach된 세션은 제외
+        ("'멈춰' 이후 재라우팅 문제와 A안" 절)."""
+        sessions = [s for s in self.all_sessions() if s.active]
         if not sessions:
             return None
         return max(sessions, key=lambda s: s.last_notify_at)
 
     def most_recent_by_command(self) -> Optional[SessionState]:
+        """규칙 ③도 ②와 같은 원칙 — detach된 세션은 후보에서 제외."""
         sessions = self.all_sessions()
         if not sessions:
             return None
-        candidates = [s for s in sessions if s.last_command_at > 0]
+        candidates = [s for s in sessions if s.last_command_at > 0 and s.active]
         if not candidates:
             return None
         return max(candidates, key=lambda s: s.last_command_at)
@@ -130,10 +166,12 @@ def route_command(table: SessionTable, spoken_text: str) -> Optional[SessionStat
     """일반 음성 명령을 어느 세션으로 보낼지 결정한다. LLM 판단 없이 규칙만.
 
     우선순위:
-      ④ 세션이 하나뿐이면 무조건 그 세션 (먼저 체크하는 게 더 빠르고 규칙과 동치)
-      ① 발화가 프로젝트명으로 시작하면 그 세션
-      ② 없으면 last_notify_at이 가장 최근인 세션
-      ③ 알림이 전혀 없었으면(모든 세션 last_notify_at==0) last_command_at 최신 세션
+      ④ 세션이 하나뿐이면 무조건 그 세션 (먼저 체크하는 게 더 빠르고 규칙과 동치.
+         detach 상태와 무관 — 세션이 하나뿐이면 "잘못된 세션으로 갈 위험" 자체가
+         없으므로 active 필터를 적용할 이유가 없다)
+      ① 발화가 프로젝트명으로 시작하면 그 세션 (active 무관, 즉시 재활성화)
+      ② 없으면 last_notify_at이 가장 최근인 active 세션
+      ③ 알림이 전혀 없었으면(모든 세션 last_notify_at==0) last_command_at 최신 active 세션
     """
     sessions = table.all_sessions()
     if not sessions:
@@ -347,7 +385,11 @@ class TtsQueue:
 # ---------------------------------------------------------------------------
 
 BEEP_SAMPLE_RATE = 16000
-BEEP_DURATION_S = 0.15
+# 0.15s는 이 PC의 MME 오디오 드라이버에서 실제로 소리가 안 들리는 문제를
+# 실측으로 확인함(2026-09-26) - 재생 요청이 스트림 오픈+버퍼 채움보다 먼저
+# 끝나버리는 것으로 추정(짧을수록 잘림). 사용자가 직접 들으며 0.15s(안 들림) →
+# 0.5s(들림) → 0.4s(들림) → 0.3s(들림)까지 실측 확인 후 0.3s로 확정.
+BEEP_DURATION_S = 0.3
 BEEP_HIGH_HZ = 880.0  # 받아쓰기 진입
 BEEP_LOW_HZ = 440.0   # 받아쓰기 완료
 
@@ -484,6 +526,17 @@ class MicLoop:
         while not self._stop.is_set():
             try:
                 self._wake_detector.listen_blocking(_on_detect, stream=stream)
+                # known-issues.md 14번: lwake.listen()은 참조 파일이 전부 로딩
+                # 실패(손상 등)하면 예외 없이 조용히 return한다 — 여기서 잡지
+                # 않으면 이 while 루프가 "감지 안 됨"을 CPU만 계속 태우며 무한
+                # 반복하고, 사용자는 원인을 알 길이 없다. 예외 없는 리턴도
+                # 이상 상황으로 보고 로그를 남긴 뒤 짧게 쉬고 재시도한다.
+                print(
+                    "[mic-loop] wakeword listen이 감지 없이 조용히 끝남 "
+                    "(참조 파일이 손상됐을 수 있음 — models/wakeword/ 확인 권장), 재시도",
+                    file=sys.stderr,
+                )
+                time.sleep(0.5)
             except _WakeDetected:
                 return
             except Exception as e:  # noqa: BLE001
@@ -521,7 +574,9 @@ class MicLoop:
             return
 
         print("[mic-loop] STT 인식 중...")
-        text = self._stt_engine.transcribe(audio, self.sample_rate, language="ko")
+        from voice.config import load_settings
+        stt_language = load_settings().get("language", "ko")
+        text = self._stt_engine.transcribe(audio, self.sample_rate, language=stt_language)
         print(f"[mic-loop] 인식 결과: {text!r}")
         self.last_transcript = text
 
@@ -540,9 +595,12 @@ class MicLoop:
 
 # 메시지 스키마 (이번 구현에서 확정, docs/architecture.md 반영 필요):
 # {
-#   "event": "notify" | "command",   # notify=완료 알림, command=음성 명령(테스트 경로에서는 안 씀)
+#   "event": "notify" | "command" | "detach" | "attach" | "shutdown",
+#     # notify=완료 알림, command=음성 명령(테스트 경로에서는 안 씀),
+#     # detach/attach=/voice-detach·/voice-attach 스킬이 보내는 자기 상태 관리
+#     # 이벤트("'멈춰' 이후 재라우팅 문제와 A안" 절)
 #   "session_id": "<CLAUDE_CODE_MESSAGING_SOCKET 경로>",
-#   "project_name": "<cwd 폴더명>",
+#   "project_name": "<cwd 폴더명>",  # attach에는 필요, detach는 session_id만 있으면 충분
 #   "text": "<요약 또는 명령 텍스트>",
 #   "socket_path": "<대상 세션의 CLAUDE_CODE_MESSAGING_SOCKET>",
 #   "token": "<대상 세션의 CLAUDE_CODE_MESSAGING_TOKEN>"
@@ -590,6 +648,22 @@ class ListenerServer:
             if event == "notify":
                 self.table.upsert_from_notify(session_id, project_name, socket_path, token)
                 self.tts_queue.enqueue(project_name, text)
+                writer.write(json.dumps({"ok": True}).encode())
+            elif event == "detach":
+                # /voice-detach: 세션이 스스로 라우팅 후보에서 빠짐
+                # ("'멈춰' 이후 재라우팅 문제와 A안" 절). 테이블에 없는
+                # session_id면 그냥 False(무시) — 아직 notify로 등록된 적
+                # 없는 세션이 detach를 보내는 건 정상 경로가 아니지만, 이 경우도
+                # 에러로 취급하지 않고 조용히 넘어간다(다른 이벤트들과 동일한
+                # 관대한 처리 원칙).
+                found = self.table.mark_detached(session_id)
+                writer.write(json.dumps({"ok": True, "found": found}).encode())
+            elif event == "attach":
+                # /voice-attach: 세션이 스스로 라우팅 후보로 복귀. notify와
+                # 동일한 정보(project_name, socket_path, token)가 필요하다 —
+                # 처음 attach하는 세션(이전에 notify를 한 번도 안 보낸 경우)도
+                # 이 이벤트만으로 테이블에 새로 등록될 수 있다.
+                self.table.mark_attached(session_id, project_name, socket_path, token)
                 writer.write(json.dumps({"ok": True}).encode())
             elif event == "shutdown":
                 # /voice-off가 보내는 종료 신호. session_id 등은 형식만 맞으면
@@ -647,9 +721,18 @@ def run_server_in_background(table: SessionTable, tts_queue: TtsQueue,
 
 def main():
     from voice.tts import TtsEngine  # 지연 임포트: 모델 로딩이 무거워서 main()에서만
+    from voice.config import load_settings
 
-    print("[listener] TTS 모델 로딩 중...")
-    tts_engine = TtsEngine()
+    settings = load_settings()
+    language_code = settings.get("language", "ko")
+    voice_id = settings.get("voice_id")
+
+    print(f"[listener] TTS 모델 로딩 중... (language={language_code}, voice={voice_id})")
+    if voice_id:
+        tts_engine = TtsEngine(language_code=language_code, voice_id=voice_id)
+    else:
+        # voice_id가 아직 없으면(온보딩 전 기존 설치) 레거시 기본 모델 경로로 폴백.
+        tts_engine = TtsEngine()
     print("[listener] TTS 모델 로딩 완료")
 
     table = SessionTable()
