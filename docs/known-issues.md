@@ -431,7 +431,7 @@ Claude Code 훅이 stdout으로 (한글이 섞일 수 있는) JSON을 출력할 
 
 ---
 
-## 16. 이 PC의 Windows MME 오디오 드라이버가 세션 도중 갑자기 잠겨 마이크 입력이 전부 막힘 (미해결, 재부팅 대기 중)
+## 16. 이 PC의 Windows MME 오디오 드라이버가 세션 도중 갑자기 잠겨 마이크 입력이 전부 막힘 (재부팅으로 해결됨, 2026-09-27 확인)
 
 **증상**
 `sounddevice.InputStream()`으로 마이크를 여는 모든 시도가
@@ -463,12 +463,58 @@ Claude Code 훅이 stdout으로 (한글이 섞일 수 있는) JSON을 출력할 
 같은 에러 검색 결과에서도 "권한 변경 후 재부팅해야 실제 적용되는 경우가 있다"는
 언급이 있었음). 사용자와 합의해 재부팅 후 다음 세션에서 재시도하기로 하고 종료.
 
-**다음 세션에서 할 일**
-재부팅 후 `python -c "import sounddevice as sd; sd.InputStream(samplerate=16000,
-channels=1).__enter__()"` 같은 최소 재현으로 먼저 스트림이 열리는지부터 확인 —
-열리면 받아쓰기(`_dictation_cycle`) 실측 검증을 이어서 진행. 재부팅 후에도 같은 에러가
-나면 이 항목을 "재부팅으로도 해결 안 됨"으로 갱신하고 다른 원인(오디오 드라이버
-재설치, Windows 업데이트 후 회귀 등)을 조사할 것.
+**해결 확인 (2026-09-27)**
+재부팅 후 같은 최소 재현(`sd.InputStream(samplerate=16000, channels=1)` 오픈+read)이
+정상 성공함을 실측 확인 — 서비스 재시작·권한 재토글로는 안 풀리고 재부팅으로만
+풀렸다는 게 최종 확정됨. 다른 사용자들의 같은 에러 검색 결과와 일치하는 결론.
+
+---
+
+## 17. `lwake.listen()`이 콜백에서 던진 예외를 조용히 삼켜 호출어 감지 후 무한 루프에 갇힘 (수정 완료, 2026-09-27)
+
+**증상**
+"자비스"라고 부른 뒤 이어서 말하는 실제 시나리오를 재현 테스트하던 중, 호출어
+`distance`가 threshold 아래로 반복 확인되는데도(콜백은 매 청크 호출됨) 프로그램이
+`_dictation_cycle`(비프음+녹음)로 전혀 넘어가지 못하고 무한히 도는 것을 실측 확인.
+`DTW comparison failed for sample_N.wav: `(에러 메시지 없이 빈 문자열)이 매 청크마다
+반복 출력됨.
+
+**원인**
+`.venv/Lib/site-packages/lwake/listen.py`의 감지 루프:
+```python
+for filename, ref_features in support_set:
+    try:
+        distance = dtw_cosine_normalized_distance(features, ref_features)
+        if distance < threshold:
+            callback(detection, stream)   # 여기서 던진 예외가 아래 except에 잡힘
+            ...
+    except Exception as e:
+        _logger.error(f"DTW comparison failed for {filename}: {e}")
+```
+`callback()` 호출이 `try` 블록 **안에** 있어서, `voice/listener.py`의 `_wait_for_wakeword`가
+호출어 감지 후 벗어나려고 콜백 안에서 던지던 `_WakeDetected(Exception)` 예외가 이
+`except Exception`에 그대로 잡혀 로그만 찍히고 사라짐 — 밖으로 전파되지 않음.
+`_logger`가 `logging` 기본 설정이 안 돼 있어 에러 메시지(`{e}`)도 화면에 안 보여
+원인 파악이 더 어려웠음.
+
+**중요**: 지난 세션(2026-09-26)에 "distance 0.198로 정상 감지됨"이라 기록했던 검증은
+콜백이 **호출되는 것**까지만 확인한 것이었고, 그 예외로 `lwake.listen()`을 실제로
+빠져나와 `_dictation_cycle`까지 정상 전환되는지는 검증되지 않았던 것으로 추정됨 —
+이번에 처음으로 그 경로 자체가 막혀 있었다는 게 드러남.
+
+**수정**
+`voice/listener.py`의 `_wait_for_wakeword` 안 `_WakeDetected`를 `Exception`이 아니라
+`BaseException`을 직접 상속하도록 변경. `KeyboardInterrupt`/`SystemExit`와 같은
+방식으로 `except Exception`을 그대로 통과해 `lwake.listen()` 밖으로 정상 전파됨.
+`sd.InputStream.__exit__`(`*args`만 받고 반환값 없음 — 억제 안 함)과
+`contextlib.nullcontext`(표준 라이브러리, 예외 억제 없음) 둘 다 코드로 확인해
+전파 경로 전체에 예외를 삼키는 지점이 없음을 확정. `lwake` 자체는 서드파티라
+수정하지 않고 우리 쪽 예외 타입만 바꿔 우회.
+
+**검증 상태**
+verify.cmd 통과(회귀 없음, import/문법 레벨). **실제 마이크로 "자비스" 호출 후
+`_dictation_cycle`까지 정상 전환되는지의 실측 재검증은 아직 안 됨** — 사용자가
+원격으로 이동해 다음 세션(로컬 자리)에서 재검증 필요.
 
 ---
 

@@ -513,7 +513,16 @@ class MicLoop:
     def _wait_for_wakeword(self, stream) -> None:
         """호출어가 감지될 때까지 블록. 감지되거나 stop()이 호출되면 반환."""
 
-        class _WakeDetected(Exception):
+        # 2026-09-27 실측으로 발견한 버그: lwake.listen()의 감지 루프는
+        # callback() 호출을 통째로 try/except Exception으로 감싸고 있어서
+        # (.venv/Lib/site-packages/lwake/listen.py), 콜백이 Exception 계열
+        # 예외를 던지면 "DTW comparison failed"로 로그만 찍히고 조용히
+        # 삼켜진다 — 호출어가 반복 감지돼도 _dictation_cycle로 못 넘어가고
+        # while True가 무한히 도는 실제 재현된 무한 루프의 원인이었다.
+        # BaseException을 직접 상속(Exception 미상속)하면 그 except 절을
+        # 그대로 통과해 밖으로 빠져나온다 — KeyboardInterrupt/SystemExit와
+        # 같은 방식.
+        class _WakeDetected(BaseException):
             pass
 
         def _on_detect(_detection: dict) -> None:
