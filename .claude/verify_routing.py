@@ -223,6 +223,13 @@ route_and_send(two_sessions(), "뭔가 해줘", judge_fn=lambda text, sessions: 
                ask_manager=lambda q: seen.append(q) or {"command": "noise", "target": "unknown", "ask_back": ""})
 assert isinstance(seen[0]["commands"], dict) and "noise" in seen[0]["commands"], "관리자에게 명령 설명이 안 감"
 
+# --- 16. 관리자가 명령을 골랐어도 되물을 문장을 함께 쓰면 실행하지 않고 그 질문을 읽는다 ---
+t, s = two_sessions(), Sender()
+ctx = listener.ListenerContext()
+r = route_and_send(t, "영상 모드 꺼져", judge_fn=lambda text, sessions: None, send=s, ctx=ctx,
+                   ask_manager=lambda q: {"command": "quiet", "target": "listener", "ask_back": "알림을 조용히 할까요?"})
+assert r["mode"] == "ask_back" and r["say"] == "알림을 조용히 할까요?" and not ctx.quiet and not s.calls, r
+
 # --- 14. 호출어: 받아쓴 글자로 확인 (마이크·모델 없이 VAD와 받아쓰기를 바꿔 끼움) ---
 import numpy as np  # noqa: E402
 from voice import wakeword  # noqa: E402

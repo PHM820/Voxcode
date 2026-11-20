@@ -294,7 +294,9 @@ def _manager_decision(ans: dict, sessions: list[SessionState], judge_mod):
     else:
         hits = [s for s in sessions if s.project_name.lower() == str(target).lower()]
         key, conf = (hits[0].session_id, 1.0) if len(hits) == 1 else (judge_mod.TARGET_UNKNOWN, 0.0)
-    if conf == 0.0 and ask_back.strip() and command not in LISTENER_COMMANDS + ("noise", "cancel", "stop_all"):
+    # 되물을 문장이 있으면 관리자도 확신이 없다는 뜻 — 실행하지 않고 그 질문을 읽는다
+    # (2026-11-20: "음성 모드 꺼"를 quiet로 실행하고 함께 쓴 질문은 버린 사고)
+    if ask_back.strip():
         return None, ask_back.strip()
     return judge_mod.Decision(command, 1.0, key, conf, "manager"), ""
 
