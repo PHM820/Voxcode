@@ -206,6 +206,20 @@ def parse_stop_command(spoken_text: str) -> Optional[str]:
     return project_name
 
 
+def should_drop_transcript(spoken_text: str, judge=None) -> tuple[bool, Optional[float]]:
+    """받아쓴 문장을 whisper 환각으로 보고 버릴지 판정 (voice/judge.py).
+
+    "멈춰"로 시작하면 판정 없이 통과 — 이 필터가 낼 수 있는 가장 나쁜 실패가
+    중단 명령을 버리는 것이라, 규칙으로 잡히는 제어 명령은 판단 모델에 맡기지 않는다.
+    판정 못 함(None)은 통과(기존 동작 유지). judge는 테스트에서 네트워크 없이 바꿔 끼우는 용도.
+    """
+    if spoken_text.strip().startswith(STOP_PREFIX):
+        return False, None
+    from voice.judge import hallucination_score, is_hallucination
+    score = (judge or hallucination_score)(spoken_text)
+    return is_hallucination(spoken_text, score), score
+
+
 # ---------------------------------------------------------------------------
 # inject.js 호출 (postback)
 # ---------------------------------------------------------------------------
@@ -592,6 +606,16 @@ class MicLoop:
         if not text.strip():
             print("[mic-loop] 빈 인식 결과, 라우팅 생략")
             return
+
+        drop, score = should_drop_transcript(text)
+        if drop:
+            # 화면 없이 쓰는 사용자가 "버려졌다"는 걸 알 수 있게 낮은 비프를 한 번 더
+            # (완료 비프 1회 = 정상 접수, 2회 = 못 알아들음). 로그는 기준선 조정용 라벨 자료.
+            print(f"[mic-loop] 환각으로 판정해 버림 (score={score:.2f}): {text!r}")
+            play_beep_blocking(BEEP_LOW_HZ)
+            return
+        if score is not None:
+            print(f"[mic-loop] 환각 판정 통과 (score={score:.2f})")
 
         result = route_and_send(self.table, text)
         self.last_route_result = result
