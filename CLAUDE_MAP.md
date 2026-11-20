@@ -35,7 +35,8 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
 
 ## 켜기·끄기·설정
 - 시작점: `voice/control.py`(`on`·`off`·`status` — 스킬이 이 한 줄을 부른다), `voice/hooks_install.py`, `.claude/skills/voice-on/SKILL.md`(최초 언어·목소리 온보딩), `voice/config.py`(`is_enabled`·`set_enabled` 전역, `load_settings` 프로젝트).
-- 함정: 켜짐 표시는 전역 `~/.voxcode/config.json`, 언어·목소리는 프로젝트 `.claude/voice-settings.json`. 없거나 깨지면 꺼짐·기본값. 리스너 살아 있음은 `~/.voxcode/listener.alive` 파일의 갱신 시각으로 본다(PID 재사용 걱정 없음). 전역 설정 등록은 이 프로젝트 hooks 경로가 든 항목만 건드리고, 깨진 JSON이면 쓰지 않는다. 테스트는 `VOXCODE_HOME`·`VOXCODE_CLAUDE_SETTINGS`로 임시 폴더를 쓴다 — 실제 전역 설정을 건드리는 검사를 만들지 말 것.
+- 함정: 켜짐 표시는 전역 `~/.voxcode/config.json`, 언어·목소리는 프로젝트 `.claude/voice-settings.json`. 없거나 깨지면 꺼짐·기본값. 리스너 살아 있음은 `~/.voxcode/listener.alive` 파일의 갱신 시각으로 본다(PID 재사용 걱정 없음). 전역 설정 등록은 이 프로젝트 hooks 경로가 든 항목만 건드리고, 깨진 JSON이면 쓰지 않는다. 테스트는 `VOXCODE_HOME`·`VOXCODE_CLAUDE_SETTINGS`·`VOXCODE_CLAUDE_SKILLS`로 임시 폴더를 쓴다 — 실제 전역 설정을 건드리는 검사를 만들지 말 것.
+- 전역 `/voice-on`·`/voice-off`: `voice/skills_install.py`가 `~/.claude/skills/`에 "설치 폴더의 같은 이름 스킬을 따르라"는 얇은 안내문을 만든다(`setup.cmd`가 호출). 설치 폴더 경로는 설치 순간 계산해 넣으므로 저장소엔 개인 경로가 없다 — 실제 절차는 계속 `.claude/skills/*/SKILL.md` 한 곳에서만 고친다. `MARKER`가 없는 같은 이름 스킬은 사용자 것이라 덮어쓰거나 지우지 않는다. 폴더를 옮기면 `install-skills`를 다시 실행해야 한다.
 
 ## 설치·검증
 - 시작점: `setup.cmd`, `requirements.txt`, `.claude/verify.cmd`(+ `verify_routing.py`, `verify_judge.py`, `verify_hooks.py`).

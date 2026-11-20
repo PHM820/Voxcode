@@ -4,6 +4,7 @@
     .venv\\Scripts\\python.exe -m voice.control on [--no-manager]
     .venv\\Scripts\\python.exe -m voice.control off
     .venv\\Scripts\\python.exe -m voice.control status
+    .venv\\Scripts\\python.exe -m voice.control install-skills | uninstall-skills   (전역 /voice-on·/voice-off)
 
 on : 켜짐 표시(~/.voxcode/config.json) → 전역 훅 등록 → 리스너 띄우기(안 떠 있으면) → 하이쿠 관리자 띄우기
 off: 켜짐 해제 → 전역 훅 해제 → 리스너에 종료 신호(inbox) → 관리자 창 끄기
@@ -107,8 +108,12 @@ def main(argv: list[str]) -> int:
         result = off()
     elif cmd == "status":
         result = status()
+    elif cmd in ("install-skills", "uninstall-skills"):
+        from voice import skills_install
+        done = skills_install.install() if cmd == "install-skills" else skills_install.uninstall()
+        result = {"ok": True, "skills": done, "dir": str(skills_install.skills_dir())}
     else:
-        result = {"ok": False, "error": f"알 수 없는 명령: {cmd} (on|off|status)"}
+        result = {"ok": False, "error": f"알 수 없는 명령: {cmd} (on|off|status|install-skills|uninstall-skills)"}
     sys.stdout.buffer.write((json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
     return 0 if result.get("ok", True) else 1
 

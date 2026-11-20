@@ -76,6 +76,10 @@ if exist "%STT_MODEL_DIR%\ggml-base.bin" (
     )
 )
 
+echo === Global /voice-on, /voice-off (usable from any project session) ===
+"%VENV_PY%" -m voice.control install-skills
+REM Undo: "%VENV_PY%" -m voice.control uninstall-skills
+
 echo.
 echo SETUP OK
 echo Next: run .claude\verify.cmd to confirm everything imports correctly.

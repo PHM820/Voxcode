@@ -15,6 +15,8 @@ HOME = Path(tempfile.mkdtemp(prefix="voxcode-verify-ctl-"))
 SETTINGS = HOME / "claude-settings.json"
 os.environ["VOXCODE_HOME"] = str(HOME)
 os.environ["VOXCODE_CLAUDE_SETTINGS"] = str(SETTINGS)
+SKILLS_DIR = HOME / "skills"
+os.environ["VOXCODE_CLAUDE_SKILLS"] = str(SKILLS_DIR)
 sys.path.insert(0, ".")
 
 from voice import config, control, hooks_install, listener  # noqa: E402
@@ -134,5 +136,23 @@ assert r["listener"] == "not_running" and r["manager"] == "not_running", r
 assert not config.is_enabled() and not hooks_install.is_installed()
 s = control.status()
 assert set(s) == {"enabled", "hooks_installed", "listener_alive", "manager_running", "manager_registered"}, s
+
+# --- 5. 전역 스킬 연결: 설치 폴더 경로가 들어감, 남의 같은 이름 스킬은 안 건드림 ---
+from voice import skills_install  # noqa: E402
+
+assert skills_install.skills_dir() == SKILLS_DIR, "테스트가 실제 전역 스킬 폴더를 가리킴"
+foreign = SKILLS_DIR / "voice-off" / "SKILL.md"
+foreign.parent.mkdir(parents=True)
+foreign.write_text("---\nname: voice-off\n---\n내 스킬", encoding="utf-8")
+assert skills_install.install() == {"voice-on": "installed", "voice-off": "skipped_foreign"}
+on_md = (SKILLS_DIR / "voice-on" / "SKILL.md").read_text(encoding="utf-8")
+src = Path(".claude/skills/voice-on/SKILL.md").resolve()
+assert str(src) in on_md and src.exists(), "전역 스킬이 실제 절차 파일을 가리키지 않음"
+assert on_md.startswith("---\nname: voice-on\n"), "스킬 머리말 형식이 깨짐"
+assert skills_install.install()["voice-on"] == "installed", "두 번째 설치가 우리 파일을 남의 것으로 봄"
+assert skills_install.uninstall() == {"voice-on": "removed", "voice-off": "skipped_foreign"}
+assert not (SKILLS_DIR / "voice-on").exists(), "해제 후 폴더가 남음"
+assert foreign.read_text(encoding="utf-8").endswith("내 스킬"), "남의 스킬이 바뀜"
+assert skills_install.uninstall()["voice-on"] == "not_installed"
 
 print("control checks OK")

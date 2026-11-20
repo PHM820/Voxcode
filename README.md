@@ -69,7 +69,8 @@ SSL 인증서 오류(`CERTIFICATE_VERIFY_FAILED`)가 나면 백신의 SSL 검사
 
 ## 켜고 끄기
 
-Claude Code에서:
+Claude Code의 **아무 프로젝트 세션에서나**:
+(`setup.cmd`가 두 명령을 사용자 전역 스킬 `~/.claude/skills/`에 연결해 둡니다. 연결을 지우려면 `.venv\Scripts\python.exe -m voice.control uninstall-skills`, Voxcode 폴더를 옮겼으면 새 위치에서 `install-skills`를 다시 실행하세요.)
 
 | 명령 | 하는 일 |
 |---|---|
