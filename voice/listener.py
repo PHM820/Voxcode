@@ -128,10 +128,17 @@ class ListenerContext:
 
     quiet: bool = False   # 조용히 모드: 질문·권한 알림(kind=notification)만 읽고 완료 요약은 기록만
     last_said: str = ""   # "다시 말해줘"용 — 마지막으로 읽기 시작한 문장
+    last_catchup: str = ""  # "밀린 거 듣기"를 마지막으로 한 시각(ISO) — 그 뒤 소식만 읽는다
+    # 전체 지시 확인 대기: (보낼 문장, 대상 session_id 목록, 만료 monotonic 시각)
+    pending_all: Optional[tuple] = None
 
     def set_quiet(self, quiet: bool) -> None:
         self.quiet = quiet
         record.set_state_field("quiet", quiet)
+
+    def set_last_catchup(self, ts: str) -> None:
+        self.last_catchup = ts
+        record.set_state_field("last_catchup", ts)
 
 
 def should_speak_notice(ctx: ListenerContext, kind: str) -> bool:
@@ -211,8 +218,22 @@ def _deliver(table: SessionTable, targets: list[SessionState], text: str, send) 
     return results
 
 
+LISTENER_COMMANDS = ("list", "repeat", "quiet", "verbose", "status", "catch_up")
+CONFIRM_TIMEOUT_S = 30.0
+YES_WORDS = ("응", "네", "예", "그래", "보내", "좋아", "ㅇㅇ")
+NO_WORDS = ("아니", "취소", "하지 마", "하지마", "말아", "보내지 마")
+CATCH_UP_RAW_MAX = 5  # 서브 관리자가 없을 때 그대로 읽을 최근 소식 수
+
+
+def _summarize(ask_manager, instruction: str, items: list) -> str:
+    """서브 관리자에게 귀로 들을 한두 문장 요약을 부탁한다. 못 받으면 빈 문자열."""
+    ans = ask_manager({"type": "summarize", "instruction": instruction, "items": items})
+    say = ans.get("say") if isinstance(ans, dict) else None
+    return say.strip() if isinstance(say, str) else ""
+
+
 def _listener_reply(table: SessionTable, ctx: ListenerContext, command: str,
-                    target: Optional[SessionState]) -> str:
+                    target: Optional[SessionState], ask_manager) -> str:
     """리스너가 세션에 보내지 않고 직접 답하는 명령의 읽을 문장."""
     sessions = table.all_sessions()
     if command == "list":
@@ -228,32 +249,92 @@ def _listener_reply(table: SessionTable, ctx: ListenerContext, command: str,
     if command == "verbose":
         ctx.set_quiet(False)
         return "이제 다 알려 드릴게요."
-    # status: 대상 하나면 그 세션, 아니면 전체 (기록 그대로 읽기)
+    if command == "catch_up":
+        news = [{"project": e.get("project_name"), "summary": e.get("summary"), "ts": e.get("ts")}
+                for e in record.read_events(ctx.last_catchup, kind="notify")]
+        ctx.set_last_catchup(record.now_iso())
+        if not news:
+            return "새로 들어온 소식이 없습니다."
+        said = _summarize(ask_manager, "자리를 비운 동안 프로젝트들에서 온 소식이다. 프로젝트별로 한두 문장에 묶어라.", news)
+        if said:
+            return said
+        recent = news[-CATCH_UP_RAW_MAX:]
+        head = f"소식 {len(news)}개 중 최근 {len(recent)}개입니다. " if len(news) > len(recent) else ""
+        return head + " ".join(f"{n['project']}: {n['summary']}" for n in recent)
+    # status: 대상 하나면 그 세션 요약 그대로, 여럿이면 서브 관리자가 묶고 못 하면 이어 읽기
     picked = [target] if target else sessions
     if not picked:
         return "열린 프로젝트가 없습니다."
-    return " ".join(f"{s.project_name}: {s.last_summary or '아직 요약이 없습니다.'}" for s in picked)
+    raw = " ".join(f"{s.project_name}: {s.last_summary or '아직 요약이 없습니다.'}" for s in picked)
+    if len(picked) > 1:
+        said = _summarize(ask_manager, "프로젝트별 마지막 상황이다. 한두 문장으로 묶어라.",
+                          [{"project": s.project_name, "paused": s.paused, "summary": s.last_summary}
+                           for s in picked])
+        return said or raw
+    return raw
 
 
-LISTENER_COMMANDS = ("list", "repeat", "quiet", "verbose", "status")
+def _manager_decision(ans: dict, sessions: list[SessionState], judge_mod):
+    """서브 관리자 답을 Decision으로. 되물을 문장이 있으면 (None, 문장)."""
+    ask_back = ans.get("ask_back") if isinstance(ans.get("ask_back"), str) else ""
+    command, target = ans.get("command"), ans.get("target")
+    if command not in judge_mod.COMMANDS:
+        return None, ask_back.strip()
+    specials = (judge_mod.TARGET_ALL, judge_mod.TARGET_LISTENER, judge_mod.TARGET_UNKNOWN)
+    if target in specials:
+        key, conf = target, (0.0 if target == judge_mod.TARGET_UNKNOWN else 1.0)
+    else:
+        hits = [s for s in sessions if s.project_name.lower() == str(target).lower()]
+        key, conf = (hits[0].session_id, 1.0) if len(hits) == 1 else (judge_mod.TARGET_UNKNOWN, 0.0)
+    if conf == 0.0 and ask_back.strip() and command not in LISTENER_COMMANDS + ("noise", "cancel", "stop_all"):
+        return None, ask_back.strip()
+    return judge_mod.Decision(command, 1.0, key, conf, "manager"), ""
+
+
+def _is_reply(text: str, words) -> bool:
+    t = text.strip().strip(".!?, ")
+    return any(t.startswith(w) for w in words)
 
 
 def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
-                   ctx: Optional[ListenerContext] = None) -> dict:
-    """받아쓴 문장 하나를 처리한다 (docs/architecture.md "다음 설계" 1단계).
+                   ctx: Optional[ListenerContext] = None, ask_manager=None) -> dict:
+    """받아쓴 문장 하나를 처리한다 (docs/architecture.md "다음 설계" 1~3단계).
 
-    judge_fn·send는 테스트에서 네트워크·node 없이 바꿔 끼우는 용도.
+    순서: 기록 → (전체 지시 확인 대기 중이면 응/아니 규칙) → 규칙·Jev 판단 → 애매하면 서브 관리자
+    → 그래도 모르면 규칙 폴백. judge_fn·send·ask_manager는 테스트에서 바꿔 끼우는 용도.
     반환: {"mode", "beep_twice", "targets"(보낸 프로젝트명), "say"(읽을 문장), "results", "decision"}.
     """
     from voice import judge as judge_mod
+    from voice import manager as manager_mod
 
     judge_fn = judge_fn or judge_mod.judge
     send = send or send_postback
     ctx = ctx or ListenerContext()
+    ask_manager = ask_manager or manager_mod.ask
 
     record.log_event("heard", text=text)  # 기록이 항상 먼저
 
     sessions = table.all_sessions()
+    mode, targets, reason, say = "", [], "", ""
+    pause_after: Optional[bool] = None
+    d = None
+
+    # 전체 지시 확인 대기 중: "응"이면 보내고, "아니"면 취소, 다른 말이면 확인을 버리고 평소대로
+    pending, ctx.pending_all = ctx.pending_all, None
+    if pending and time.monotonic() < pending[2]:
+        if _is_reply(text, YES_WORDS):
+            mode, targets = "instruct_all", [s for s in (table.get(k) for k in pending[1]) if s]
+            text_to_send = pending[0]
+        elif _is_reply(text, NO_WORDS):
+            mode, say = "instruct_all_cancelled", "보내지 않았습니다."
+    if mode:
+        record.log_event("decision", text=text, mode=mode, target=[t.project_name for t in targets],
+                         source="rule", reason="전체 지시 확인 응답", say=say)
+        results = _deliver(table, targets, text_to_send, send) if targets else []
+        return {"mode": mode, "beep_twice": not targets and not say,
+                "targets": [t.project_name for t in targets], "say": say,
+                "results": results, "decision": None}
+
     try:
         d = judge_fn(text, [
             {"key": s.session_id, "project": s.project_name,
@@ -267,6 +348,27 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
     ok_cmd = d is not None and d.command_conf >= threshold
     ok_target = d is not None and d.target_conf >= threshold
 
+    # 3단계: Jev가 애매하면(판단 불가·명령 확신 부족, 또는 멈춰·다시 시작의 대상 애매) 서브 관리자에게
+    target_unclear = (ok_cmd and d.command in ("stop", "resume") and len(sessions) > 1
+                      and not (ok_target and (table.get(d.target) or d.target == judge_mod.TARGET_ALL)))
+    if not ok_cmd or target_unclear:
+        ans = ask_manager({
+            "type": "judge", "text": text, "commands": list(judge_mod.COMMANDS),
+            "jev": None if d is None else {"command": d.command, "command_conf": d.command_conf,
+                                           "target_conf": d.target_conf},
+            "sessions": [{"project": s.project_name, "paused": s.paused, "summary": s.last_summary}
+                         for s in sessions],
+            "recent": record.tail_events(20),
+        })
+        if isinstance(ans, dict):
+            md, ask_back = _manager_decision(ans, sessions, judge_mod)
+            if md is not None:
+                d, ok_cmd, ok_target = md, True, md.target_conf >= threshold
+            elif ask_back:
+                mode, say = "ask_back", ask_back
+        if not mode and not ok_cmd:
+            reason = "판단 불가(관리자 없음·시간 초과)" if d is None else f"명령 확신 부족({d.command_conf:.2f})"
+
     def target_session() -> Optional[SessionState]:
         """세션 하나를 향한 명령의 대상. 세션이 하나뿐이면 규칙으로 확정."""
         if len(sessions) == 1:
@@ -275,11 +377,9 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
             return table.get(d.target)
         return None
 
-    mode, targets, reason, say = "", [], "", ""
-    pause_after: Optional[bool] = None
-
-    if not ok_cmd:
-        reason = "판단 불가" if d is None else f"명령 확신 부족({d.command_conf:.2f})"
+    if mode:
+        pass  # 서브 관리자가 되물음
+    elif not ok_cmd:
         if _has_stop_word(text):
             only = sessions[0] if len(sessions) == 1 else None
             mode, targets, pause_after = ("stop", [only], True) if only else ("stop_ambiguous", [], None)
@@ -290,7 +390,15 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
         mode = "dropped"
     elif d.command in LISTENER_COMMANDS:
         mode = d.command
-        say = _listener_reply(table, ctx, d.command, table.get(d.target) if ok_target else None)
+        say = _listener_reply(table, ctx, d.command, table.get(d.target) if ok_target else None, ask_manager)
+    elif d.command == "instruct_all":
+        live = [s for s in sessions if not s.paused]
+        if live:
+            # 확인 문장은 템플릿 — 서브 관리자에게 맡기면 매번 최대 20초를 더 기다린다
+            ctx.pending_all = (text, [s.session_id for s in live], time.monotonic() + CONFIRM_TIMEOUT_S)
+            mode, say = "confirm_all", f"프로젝트 {len(live)}개에 '{text}'를 보낼까요?"
+        else:
+            mode, say = "no_target", "보낼 프로젝트가 없습니다."
     elif d.command == "instruct":
         st = target_session() or route_command(table)
         mode, targets = ("instruct", [st]) if st else ("no_target", [])

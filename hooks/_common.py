@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from voice.config import is_enabled  # noqa: E402,F401 - 훅들이 여기서 가져다 쓴다
+from voice import manager  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -40,8 +41,16 @@ def notify_listener(text: str, cwd: str, kind: str = "stop") -> None:
     """리스너에 완료·알림 텍스트를 보낸다. 응답은 기다리지 않는다.
 
     session_id는 별도로 만들지 않고 이 세션의 메시징 소켓 경로를 그대로 쓴다.
+    서브 관리자 세션(~/.voxcode/manager/)이면 프로젝트로 알리지 않고 자기 연결 정보만 등록한다.
     """
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
+    if manager.is_manager_cwd(cwd):
+        try:
+            if socket_path:
+                manager.register(socket_path, os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", ""))
+        except Exception:
+            pass
+        return
     message = {
         "event": "notify",
         "kind": kind,

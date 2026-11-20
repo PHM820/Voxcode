@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import is_delegate_worker, is_enabled, read_payload  # noqa: E402
+from _common import is_delegate_worker, is_enabled, manager, read_payload  # noqa: E402
 
 VOICE_MODE_REMINDER = (
     "[음성모드 켜짐] 이 응답의 끝은 TTS로 읽힙니다. 코드블록·파일 경로 나열 "
@@ -22,7 +22,7 @@ VOICE_MODE_REMINDER = (
 def main() -> int:
     payload = read_payload()
     cwd = payload.get("cwd") or os.getcwd()
-    if is_delegate_worker(cwd) or not is_enabled():
+    if is_delegate_worker(cwd) or manager.is_manager_cwd(cwd) or not is_enabled():
         return 0
     output = {
         "hookSpecificOutput": {

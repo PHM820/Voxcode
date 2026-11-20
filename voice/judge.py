@@ -34,6 +34,8 @@ COMMANDS = (
     "instruct", "stop", "stop_all", "resume", "cancel", "noise",
     # 리스너가 직접 답하는 명령 (2단계)
     "list", "repeat", "quiet", "verbose", "status",
+    # 서브 관리자가 함께 쓰는 명령 (3단계)
+    "catch_up", "instruct_all",
 )
 TARGET_ALL = "all"
 TARGET_LISTENER = "listener"
@@ -58,6 +60,8 @@ _COMMAND_OPTIONS = {
     "quiet": "음성 비서에게 알림을 줄이라는 말. 예: '조용히 해', '중요한 것만 알려줘'",
     "verbose": "음성 비서에게 알림을 다시 다 읽으라는 말. 예: '다 알려줘', '조용히 모드 꺼'",
     "status": "프로젝트 진행 상황을 묻는 말. 예: '번개장터 어떻게 됐어?', '다들 어디까지 했어?'",
+    "catch_up": "자리를 비운 동안 들어온 소식을 몰아서 듣고 싶다는 말. 예: '나 없는 동안 뭐 했어?', '밀린 거 알려줘'",
+    "instruct_all": "열린 모든 프로젝트에 같은 작업을 시키는 말. 예: '다들 커밋하고 정리해', '전부 테스트 돌려'",
 }
 
 _TARGET_INSTRUCTIONS = (

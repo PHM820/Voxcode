@@ -42,6 +42,46 @@ def log_event(kind: str, **fields) -> None:
         print(f"[record] log 기록 실패: {e}", file=sys.stderr)
 
 
+def read_events(since_ts: str = "", kind: str = "") -> list[dict]:
+    """log.jsonl에서 since_ts(ISO 문자열) 이후 사건을 읽는다. 깨진 줄은 건너뛴다."""
+    events = []
+    try:
+        with open(home() / "log.jsonl", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("ts", "") > since_ts and (not kind or e.get("kind") == kind):
+                    events.append(e)
+    except OSError:
+        pass
+    return events
+
+
+def tail_events(n: int, max_bytes: int = 65536) -> list[dict]:
+    """log.jsonl 끝부분에서 최근 n개 사건만 읽는다(파일 전체를 읽지 않음)."""
+    try:
+        with open(home() / "log.jsonl", "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            chunk = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    events = []
+    for line in chunk.splitlines()[1 if size > max_bytes else 0:]:  # 잘린 첫 줄 버림
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    return events[-n:]
+
+
+def now_iso() -> str:
+    return _now()
+
+
 def set_state_field(name: str, value) -> None:
     """세션 밖 상황 값을 바꾸고 state.json을 다시 쓴다."""
     _extra[name] = value
