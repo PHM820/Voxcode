@@ -131,32 +131,7 @@ state = json.loads((HOME / "state.json").read_text(encoding="utf-8"))
 assert {x["project_name"]: x["paused"] for x in state["sessions"]} == {"proj-a": False, "proj-b": False}
 assert state["listener_pid"] == os.getpid()
 
-# --- 11. TCP 완료 알림 경로(handle_client): 기록 + 요약 갱신, 멈춤 유지, detach는 모르는 이벤트 ---
-import asyncio  # noqa: E402
-
-
-class FakeReader:
-    def __init__(self, msg):
-        self.raw = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-
-    async def read(self, n):
-        return self.raw
-
-
-class FakeWriter:
-    def __init__(self):
-        self.out = b""
-
-    def write(self, b):
-        self.out += b
-
-    async def drain(self):
-        pass
-
-    def close(self):
-        pass
-
-
+# --- 11. inbox 완료 알림 경로(InboxWatcher): 기록 + 요약 갱신, 멈춤 유지, 조용히 모드 ---
 class FakeTts:
     def __init__(self):
         self.items = []
@@ -166,30 +141,26 @@ class FakeTts:
         self.items.append((project, summary))
 
 
-def call_server(server, msg):
-    w = FakeWriter()
-    asyncio.run(server.handle_client(FakeReader(msg), w))
-    return json.loads(w.out.decode("utf-8"))
-
-
 t = SessionTable()
 tts = FakeTts()
-server = listener.ListenerServer(t, tts)
+kinds_seen = []
+watcher = listener.InboxWatcher(t, tts, classify=lambda text: kinds_seen.append(text) or ("done", 0.9))
+now = __import__("time").time()
 note = {"event": "notify", "session_id": "k-n", "project_name": "proj-n",
-        "text": "테스트 다 통과", "socket_path": "k-n", "token": "tok"}
-assert call_server(server, note) == {"ok": True}
+        "text": "테스트 다 통과", "socket_path": "k-n", "token": "tok", "ts": now}
+assert watcher.handle(note) is False
 assert t.get("k-n").last_summary == "테스트 다 통과" and tts.items == [("proj-n", "테스트 다 통과")]
 t.set_paused("k-n", True)
-call_server(server, note)
-assert t.get("k-n").paused, "TCP 완료 알림이 멈춘 세션을 살림"
-assert call_server(server, {**note, "event": "detach"})["ok"] is False, "detach 이벤트가 남아 있음"
+watcher.handle(note)
+assert t.get("k-n").paused, "완료 알림이 멈춘 세션을 살림"
 logged = [json.loads(l) for l in LOG.read_text(encoding="utf-8").splitlines()]
 assert any(e["kind"] == "notify" and e["summary"] == "테스트 다 통과" for e in logged)
+assert any(e["kind"] == "notice_kind" and e.get("notice_type") == "done" and e.get("conf") == 0.9 for e in logged), "Jev 종류 판단 기록 없음"
 tts.ctx.quiet = True
 tts.items.clear()
-call_server(server, note)
+watcher.handle(note)
 assert tts.items == [], "조용히 모드에서 완료 요약을 읽음"
-call_server(server, {**note, "kind": "notification", "text": "권한 필요"})
+watcher.handle({**note, "kind": "notification", "text": "권한 필요"})
 assert tts.items == [("proj-n", "권한 필요")], "조용히 모드에서 질문·권한 알림을 안 읽음"
 
 # --- 11-2. 리스너가 직접 답하는 명령 (2단계): 세션에 안 보냄, 삑 없음, 읽을 문장 ---

@@ -5,13 +5,15 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
 결정 이유: `docs/decisions.md`, 겪은 문제: `docs/known-issues.md`.
 
 ## 음성 요약 (훅 → 리스너 → TTS)
-- 개요: Stop·Notification 훅이 텍스트를 로컬 TCP(127.0.0.1:8765)로 리스너에 보내고, 리스너가 "{프로젝트명}, {내용}"을 순서대로 읽는다.
-- 시작점: `hooks/on-stop.py`(`last_paragraph`), `hooks/on-notification.py`, `hooks/_common.py`(`notify_listener`), `voice/listener.py`(`ListenerServer`, `TtsQueue`), 등록은 `.claude/settings.json`.
+- 개요: Stop·Notification 훅이 `~/.voxcode/inbox/`에 JSON 파일을 남기고, 리스너(`InboxWatcher`)가 읽어 리스너가 "{프로젝트명}, {내용}"을 순서대로 읽는다.
+- 시작점: `hooks/on-stop.py`(`last_paragraph`), `hooks/on-notification.py`, `hooks/_common.py`(`notify_listener`), `voice/listener.py`(`InboxWatcher`, `TtsQueue`), 등록은 사용자 전역 `~/.claude/settings.json`(`voice/hooks_install.py`, 켤 때 등록·끌 때 해제 — 프로젝트 `.claude/settings.json`에는 없다).
 - 함정:
-  - 훅은 절대 Claude Code를 막으면 안 된다 — 예외를 삼키고 항상 exit 0, 연결 타임아웃 0.3초(리스너가 꺼져 있으면 이 환경에선 거부가 아니라 타임아웃이 난다).
+  - 훅은 절대 Claude Code를 막으면 안 된다 — 예외를 삼키고 항상 exit 0. 훅은 모든 프로젝트 세션에서 돌므로 가볍게 유지.
+  - inbox 파일은 `.tmp`로 쓰고 이름을 바꾼다(리스너는 `*.json`만 읽음). 못 읽는 파일은 `inbox/bad/`로 옮긴다. 리스너가 켜지기 전 종료 신호는 무시, 60초 넘은 알림은 세션 등록만 하고 안 읽는다.
+  - 받아쓰는 동안(`TtsQueue.hold`)은 TTS를 미룬다. 알림마다 Jev 종류 판단(`classify_notice`)을 기록만 한다.
   - Windows에서 stdin/stdout은 cp949로 처리돼 한글이 깨진다 — 항상 바이트로 읽고 UTF-8로 쓴다.
   - Stop 훅은 응답의 **마지막 문단만** 보낸다. 그래서 음성모드에서는 응답을 1~2문장 요약으로 맺어야 한다(`hooks/on-user-prompt-submit.py`가 매 턴 이 지시를 넣고, 프로젝트 `CLAUDE.md`에도 같은 문단이 있다 — 문구를 바꾸면 둘 다).
-  - `.claude/worktrees/` 아래(/delegate 작업자) 세션과 `enabled: false`면 아무것도 보내지 않는다.
+  - `.claude/worktrees/` 아래(/delegate 작업자) 세션, 서브 관리자 폴더, 전역 `enabled: false`(`~/.voxcode/config.json`)면 아무것도 남기지 않는다.
 
 ## 음성 명령 (호출어 → 받아쓰기 → 라우팅 → 주입)
 - 개요: 리스너 안의 `MicLoop` 스레드가 마이크를 계속 열고, "자비스"를 감지하면 비프 → 녹음(VAD로 끝 감지) → whisper 받아쓰기 → `~/.voxcode/log.jsonl`에 먼저 기록 → 판단(규칙·Jev)으로 명령과 대상 결정 → `voice/inject.js`로 그 세션에 사용자 메시지로 넣는다.
@@ -31,8 +33,8 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
 - 함정: 모델은 `models/`(git 제외). mimic3 계열(ko, vi)도 espeak-ng-data가 필요하고 중국어는 lexicon.txt가 필요하다. 한국어 인식 정확도가 낮은 건 whisper 모델 크기 문제가 아니다(small로도 그대로).
 
 ## 켜기·끄기·설정
-- 시작점: `.claude/skills/voice-on/SKILL.md`(리스너 spawn + 최초 언어·목소리 온보딩), `.claude/skills/voice-off/SKILL.md`(shutdown 이벤트), `voice/config.py`(`load_settings`), `.claude/voice-settings.json`.
-- 함정: 설정 파일이 없거나 깨져도 기본값으로 동작해야 한다(`enabled` 기본 false). 리스너는 Windows 서비스가 아니라 분리된 프로세스로 띄운다.
+- 시작점: `voice/control.py`(`on`·`off`·`status` — 스킬이 이 한 줄을 부른다), `voice/hooks_install.py`, `.claude/skills/voice-on/SKILL.md`(최초 언어·목소리 온보딩), `voice/config.py`(`is_enabled`·`set_enabled` 전역, `load_settings` 프로젝트).
+- 함정: 켜짐 표시는 전역 `~/.voxcode/config.json`, 언어·목소리는 프로젝트 `.claude/voice-settings.json`. 없거나 깨지면 꺼짐·기본값. 리스너 살아 있음은 `~/.voxcode/listener.alive` 파일의 갱신 시각으로 본다(PID 재사용 걱정 없음). 전역 설정 등록은 이 프로젝트 hooks 경로가 든 항목만 건드리고, 깨진 JSON이면 쓰지 않는다. 테스트는 `VOXCODE_HOME`·`VOXCODE_CLAUDE_SETTINGS`로 임시 폴더를 쓴다 — 실제 전역 설정을 건드리는 검사를 만들지 말 것.
 
 ## 설치·검증
 - 시작점: `setup.cmd`, `requirements.txt`, `.claude/verify.cmd`(+ `verify_routing.py`, `verify_judge.py`, `verify_hooks.py`).

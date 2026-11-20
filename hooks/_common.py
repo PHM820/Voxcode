@@ -8,19 +8,14 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import sys
+import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from voice.config import is_enabled  # noqa: E402,F401 - 훅들이 여기서 가져다 쓴다
-from voice import manager  # noqa: E402
-
-HOST = "127.0.0.1"
-PORT = 8765
-# 리스너가 꺼져 있으면 이 환경에선 즉시 거부되지 않고 타임아웃까지 기다린다(2026-09-26 실측)
-# — 이 값이 곧 "리스너가 꺼져 있을 때 훅이 늦추는 최대 시간"이라 짧게 둔다.
-CONNECT_TIMEOUT = 0.3
+from voice import manager, record  # noqa: E402
 
 
 def read_payload() -> dict:
@@ -38,7 +33,10 @@ def is_delegate_worker(cwd: str) -> bool:
 
 
 def notify_listener(text: str, cwd: str, kind: str = "stop") -> None:
-    """리스너에 완료·알림 텍스트를 보낸다. 응답은 기다리지 않는다.
+    """완료·알림을 ~/.voxcode/inbox/에 파일로 남긴다. 리스너가 폴더를 지켜보다 읽어 간다.
+
+    리스너가 꺼져 있어도 사라지지 않고 다음에 켤 때 세션 등록에 쓰인다. 반쯤 쓴 파일을 읽지 않게
+    .tmp로 쓰고 이름을 바꾼다(리스너는 *.json만 읽음).
 
     session_id는 별도로 만들지 않고 이 세션의 메시징 소켓 경로를 그대로 쓴다.
     서브 관리자 세션(~/.voxcode/manager/)이면 프로젝트로 알리지 않고 자기 연결 정보만 등록한다.
@@ -59,9 +57,18 @@ def notify_listener(text: str, cwd: str, kind: str = "stop") -> None:
         "text": text,
         "socket_path": socket_path,
         "token": os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", ""),
+        "ts": time.time(),
     }
     try:
-        with socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT) as sock:
-            sock.sendall(json.dumps(message, ensure_ascii=False).encode("utf-8"))
+        write_inbox(message)
     except Exception:
-        pass  # 리스너가 꺼져 있는 것도 정상 경로 — 공식 터미널 벨이 최소 신호를 준다
+        pass  # 기록 실패도 조용히 — 공식 터미널 벨이 최소 신호를 준다
+
+
+def write_inbox(message: dict) -> Path:
+    inbox = record.home() / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time_ns()}-{uuid.uuid4().hex[:6]}"
+    tmp = inbox / f"{name}.tmp"
+    tmp.write_text(json.dumps(message, ensure_ascii=False), encoding="utf-8")
+    return Path(os.replace(tmp, inbox / f"{name}.json") or inbox / f"{name}.json")

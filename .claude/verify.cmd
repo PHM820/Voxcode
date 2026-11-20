@@ -11,7 +11,7 @@ if not exist "%VENV_PY%" (
 )
 
 echo === voice/listener.py syntax + import check ===
-"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; import voice.config; import voice.languages; import voice.stt; import voice.vad; import voice.wakeword; import voice.judge; import voice.record; import voice.manager; print('import OK')"
+"%VENV_PY%" -c "import sys; sys.path.insert(0, '.'); import voice.listener; import voice.tts; import voice.config; import voice.languages; import voice.stt; import voice.vad; import voice.wakeword; import voice.judge; import voice.record; import voice.manager; import voice.hooks_install; import voice.control; print('import OK')"
 if errorlevel 1 (
     echo VERIFY FAILED: import error
     exit /b 1
@@ -35,6 +35,13 @@ echo === voice/manager.py sub-manager + stage 3 command checks (no claude, no no
 "%VENV_PY%" .claude\verify_manager.py
 if errorlevel 1 (
     echo VERIFY FAILED: manager logic
+    exit /b 1
+)
+
+echo === stage 4: inbox, global hook install, on/off (temp folders only) ===
+"%VENV_PY%" .claude\verify_control.py
+if errorlevel 1 (
+    echo VERIFY FAILED: control logic
     exit /b 1
 )
 

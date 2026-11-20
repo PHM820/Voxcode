@@ -72,6 +72,15 @@ _TARGET_INSTRUCTIONS = (
 )
 
 
+# 완료·알림 문장의 종류 (4단계 듣기). 처음 1주는 기록만 하고 읽기 동작에는 쓰지 않는다.
+NOTICE_KINDS = {
+    "done": "작업을 끝냈다는 보고",
+    "failed": "실패·오류·막힘 보고",
+    "question": "사용자에게 묻거나 승인·선택을 기다림",
+    "progress": "아직 진행 중이라는 중간 보고",
+}
+
+
 @dataclass(frozen=True)
 class Decision:
     command: str        # COMMANDS 중 하나
@@ -177,4 +186,21 @@ def judge(text: str, sessions: list[dict], ask: Optional[AskFn] = None) -> Optio
         target, target_conf = _choice_and_conf(answers["target"], target_allowed)
         return Decision(command, command_conf, alias.get(target, target), target_conf, "jev")
     except Exception:  # noqa: BLE001 - 판단 실패는 None(규칙 폴백), 마이크 스레드로 새면 안 됨
+        return None
+
+
+def classify_notice(text: str, ask: Optional[AskFn] = None) -> Optional[tuple[str, float]]:
+    """완료·알림 문장의 종류와 확신도. 키 없음·오류면 None. 예외를 밖으로 내보내지 않는다."""
+    try:
+        key = _load_key()
+        if not key or not text.strip():
+            return None
+        payload = {
+            "model": JEV_MODEL,
+            "state": f"코딩 작업 세션이 보낸 알림: {text[:SUMMARY_MAX_CHARS * 2]}",
+            "questions": {"kind": {"type": "choice", "instructions": "이 알림의 종류를 고르라.",
+                                   "criteria": dict(NOTICE_KINDS)}},
+        }
+        return _choice_and_conf((ask or _ask_jev)(payload, key)["kind"], NOTICE_KINDS)
+    except Exception:  # noqa: BLE001
         return None

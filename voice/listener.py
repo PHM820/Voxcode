@@ -5,7 +5,7 @@ docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(�
 스키마 일부, 프로세스 생명주기 관리 스크립트)는 TODO로 남긴다.
 
 이 파일이 실제로 왕복하는 것:
-  1. 로컬 TCP 서버(127.0.0.1:8765)로 훅이 보내는 완료 알림 JSON을 수신
+  1. 훅이 ~/.voxcode/inbox/에 남기는 완료·알림 파일을 읽음 (InboxWatcher)
   2. 세션별 상태 테이블에 반영 (~/.voxcode/state.json 스냅숏, voice/record.py)
   3. 여러 알림이 겹치면 큐에 쌓아 "{프로젝트명}, {요약}" 형식으로 순차 TTS
   4. 받아쓴 문장 처리(route_and_send): log.jsonl에 먼저 기록 → 판단(규칙·Jev,
@@ -16,13 +16,12 @@ docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(�
      대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send
      (architecture.md "다음 설계" 절)
 
-MicLoop은 별도 스레드(daemon)에서 돌아 asyncio TCP 서버와 동시에 동작한다
-(작업 지시서 4번 요구사항).
+MicLoop은 별도 스레드(daemon)에서 돌고, 메인 스레드는 inbox를 지켜본다.
 """
 from __future__ import annotations
 
-import asyncio
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -36,10 +35,7 @@ import numpy as np
 
 from voice import record
 
-# ---- 고정값 (이번 구현에서 확정, docs/architecture.md에 반영) ----
-HOST = "127.0.0.1"
-PORT = 8765
-
+# ---- 고정값 ----
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INJECT_JS = PROJECT_ROOT / "voice" / "inject.js"
 
@@ -449,8 +445,8 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
 class TtsQueue:
     """도착 순서대로 TTS를 순차 재생하는 큐.
 
-    threading.Thread 하나가 큐를 소비한다 (asyncio TCP 서버와 별도 스레드 —
-    TTS 재생(sounddevice, 블로킹)이 이벤트 루프를 막지 않도록 분리).
+    threading.Thread 하나가 큐를 소비한다 (TTS 재생은 블로킹이라 inbox 감시와 분리).
+    받아쓰는 동안(hold)은 다음 문장을 시작하지 않고 미룬다 — 마이크에 TTS 소리가 섞이지 않게.
     """
 
     def __init__(self, tts_engine, ctx: Optional[ListenerContext] = None):
@@ -462,6 +458,7 @@ class TtsQueue:
         # 블로킹으로 처리하므로, "지금 재생 중"임을 MicLoop이 확인할 플래그가 필요하다.
         self._speaking = threading.Event()
         self._interrupt_requested = threading.Event()
+        self.hold = threading.Event()  # MicLoop이 받아쓰는 동안 set
 
     def start(self) -> None:
         self._thread.start()
@@ -488,6 +485,8 @@ class TtsQueue:
     def _run(self) -> None:
         while True:
             utterance = self._q.get()
+            while self.hold.is_set():
+                time.sleep(0.1)
             print(f"[tts-queue] 재생: {utterance!r}")
             self.ctx.last_said = utterance
             self._interrupt_requested.clear()
@@ -547,7 +546,7 @@ DICTATION_MAX_S = 15.0  # 받아쓰기 최대 길이 안전장치 (무한정 녹
 class MicLoop:
     """상시 마이크 루프: 호출어 대기 → 받아쓰기 → 라우팅. TTS 재생 중 호출어가 들리면 재생을 끊는다.
 
-    별도 스레드(daemon)에서 run()을 실행해 asyncio TCP 서버와 동시에 돈다
+    별도 스레드(daemon)에서 run()을 실행해 inbox 감시와 동시에 돈다
     (작업 지시서 4번). 무거운 모델(SttEngine, WakeWordDetector)은 스레드
     시작 시 1회만 로딩한다.
     """
@@ -587,7 +586,7 @@ class MicLoop:
         try:
             self._ensure_models()
             self.run()
-        except Exception as e:  # noqa: BLE001 - 마이크 루프가 죽어도 TCP 서버는 살아있어야 함
+        except Exception as e:  # noqa: BLE001 - 마이크 루프가 죽어도 음성 요약(inbox)은 살아있어야 함
             print(f"[mic-loop] 치명적 오류로 중단: {e}", file=sys.stderr)
 
     def run(self) -> None:
@@ -615,7 +614,11 @@ class MicLoop:
                 print("[mic-loop] 호출어 감지: 받아쓰기 진입")
                 if self.tts_queue.is_speaking:
                     self.tts_queue.interrupt()
-                self._dictation_cycle(stream, play_entry_beep=True)
+                self.tts_queue.hold.set()
+                try:
+                    self._dictation_cycle(stream, play_entry_beep=True)
+                finally:
+                    self.tts_queue.hold.clear()
 
         print("[mic-loop] 마이크 루프 종료")
 
@@ -714,94 +717,109 @@ class MicLoop:
 
 
 # ---------------------------------------------------------------------------
-# TCP 서버
+# 훅 → 리스너: ~/.voxcode/inbox/ 파일 (4단계, TCP 서버 대체)
 # ---------------------------------------------------------------------------
 
-# 메시지 스키마 (이번 구현에서 확정, docs/architecture.md 반영 필요):
+# inbox 파일 하나 = JSON 하나:
 # {
 #   "event": "notify" | "shutdown",
-#     # notify=완료 알림(text가 요약), shutdown=/voice-off 종료 신호
-#   "session_id": "<CLAUDE_CODE_MESSAGING_SOCKET 경로>",
-#   "project_name": "<cwd 폴더명>",
-#   "text": "<요약 또는 명령 텍스트>",
-#   "socket_path": "<대상 세션의 CLAUDE_CODE_MESSAGING_SOCKET>",
-#   "token": "<대상 세션의 CLAUDE_CODE_MESSAGING_TOKEN>"
+#     # notify=완료·알림(hooks/_common.py), shutdown=/voice-off 종료 신호(voice/control.py)
+#   "kind": "stop" | "notification",   # notify만: Stop 훅(완료 요약) / Notification 훅(권한·질문)
+#   "session_id", "socket_path": "<CLAUDE_CODE_MESSAGING_SOCKET>",  # 지금은 같은 값
+#   "project_name": "<cwd 폴더명>", "text": "<요약·알림 문구>",
+#   "token": "<CLAUDE_CODE_MESSAGING_TOKEN>", "ts": <time.time()>
 # }
-# session_id와 socket_path는 architecture.md 결정대로 동일한 값(소켓 경로 자체)이지만,
-# 필드를 분리해둔 이유: session_id는 "테이블의 키"라는 의미, socket_path는 "postback 시
-# 실제로 연결할 주소"라는 의미로 역할이 다르다 (지금은 같은 문자열이라도 나중에 달라질
-# 여지를 남김 — 과설계는 아니고 이미 의미가 다른 두 용도라 필드를 합치지 않음).
 
-class ListenerServer:
-    def __init__(self, table: SessionTable, tts_queue: TtsQueue,
-                 host: str = HOST, port: int = PORT):
+INBOX_POLL_S = 0.3
+HEARTBEAT_S = 2.0      # 살아 있음 표시(alive 파일) 갱신 간격
+STALE_NOTICE_S = 60.0  # 리스너가 켜지기 이만큼 전에 온 알림은 세션 등록만 하고 읽지 않는다
+
+
+def inbox_dir() -> Path:
+    return record.home() / "inbox"
+
+
+def alive_file() -> Path:
+    return record.home() / "listener.alive"
+
+
+def is_listener_alive(max_age_s: float = HEARTBEAT_S * 3) -> bool:
+    """리스너가 살아 있는지: alive 파일이 최근에 갱신됐는지로 본다(PID 재사용 걱정 없음)."""
+    try:
+        return time.time() - alive_file().stat().st_mtime < max_age_s
+    except OSError:
+        return False
+
+
+class InboxWatcher:
+    """inbox 폴더를 주기적으로 읽어 알림을 처리한다. shutdown 이벤트를 받으면 process_once가 True."""
+
+    def __init__(self, table: SessionTable, tts_queue: "TtsQueue", started_at: Optional[float] = None,
+                 classify=None):
         self.table = table
         self.tts_queue = tts_queue
-        self.host = host
-        self.port = port
-        self._server: Optional[asyncio.base_events.Server] = None
-        self._shutdown_requested = False
+        self.started_at = time.time() if started_at is None else started_at
+        self._classify = classify  # 테스트 주입용. None이면 voice.judge.classify_notice
+        self._last_beat = 0.0
 
-    async def handle_client(self, reader: asyncio.StreamReader,
-                             writer: asyncio.StreamWriter) -> None:
-        try:
-            raw = await reader.read(65536)
-            if not raw:
-                return
+    def beat(self) -> None:
+        now = time.time()
+        if now - self._last_beat >= HEARTBEAT_S:
             try:
-                msg = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError as e:
-                writer.write(json.dumps({"ok": False, "error": f"invalid json: {e}"}).encode())
-                await writer.drain()
-                return
+                alive_file().write_text(str(os.getpid()), encoding="utf-8")
+            except OSError:
+                pass
+            self._last_beat = now
 
-            event = msg.get("event", "notify")
-            session_id = msg.get("session_id")
-            project_name = msg.get("project_name", "알 수 없는 프로젝트")
-            text = msg.get("text", "")
-            socket_path = msg.get("socket_path", session_id)
-            token = msg.get("token", "")
+    def process_once(self) -> bool:
+        self.beat()
+        shutdown = False
+        for path in sorted(inbox_dir().glob("*.json")):
+            try:
+                msg = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(msg, dict):
+                    raise ValueError("JSON 객체가 아님")
+                shutdown = self.handle(msg) or shutdown
+                path.unlink()
+            except Exception as e:  # noqa: BLE001 - 파일 하나가 깨져도 계속, 같은 파일을 반복해 읽지 않게 치움
+                print(f"[inbox] 처리 실패 {path.name}: {e}", file=sys.stderr)
+                bad = inbox_dir() / "bad"
+                bad.mkdir(exist_ok=True)
+                try:
+                    os.replace(path, bad / path.name)
+                except OSError:
+                    pass
+        return shutdown
 
-            if not session_id:
-                writer.write(json.dumps({"ok": False, "error": "session_id 없음"}).encode())
-                await writer.drain()
-                return
-
-            if event == "notify":
-                kind = msg.get("kind", "stop")  # stop=완료 요약, notification=권한·질문 알림
-                record.log_event("notify", project_name=project_name, summary=text, notice=kind)
-                # 멈춘 세션의 완료 알림도 요약은 갱신하지만 멈춤은 풀지 않는다
-                self.table.upsert_from_notify(session_id, project_name, socket_path, token, summary=text)
-                if should_speak_notice(self.tts_queue.ctx, kind):
-                    self.tts_queue.enqueue(project_name, text)
-                writer.write(json.dumps({"ok": True}).encode())
-            elif event == "shutdown":
-                # /voice-off가 보내는 종료 신호. session_id 등은 형식만 맞으면
-                # 되고 내용은 검사하지 않는다(로컬 127.0.0.1 전용이라 이 정도로
-                # 충분 — architecture.md "상주 프로세스 생명주기" 참고).
-                writer.write(json.dumps({"ok": True}).encode())
-                await writer.drain()
-                writer.close()
-                self._shutdown_requested = True
-                if self._server is not None:
-                    self._server.close()
-                return
-            else:
-                writer.write(json.dumps({"ok": False, "error": f"unknown event: {event}"}).encode())
-
-            await writer.drain()
-        finally:
-            writer.close()
-
-    async def start(self) -> None:
-        self._server = await asyncio.start_server(self.handle_client, self.host, self.port)
-        addr = self._server.sockets[0].getsockname()
-        print(f"[listener] TCP 서버 시작: {addr}")
-
-    async def serve_forever(self) -> None:
-        await self.start()
-        async with self._server:
-            await self._server.serve_forever()
+    def handle(self, msg: dict) -> bool:
+        event = msg.get("event", "notify")
+        ts = float(msg.get("ts") or 0)
+        if event == "shutdown":
+            # 리스너가 꺼져 있을 때 남은 종료 신호로 새 리스너가 바로 꺼지면 안 된다
+            return ts >= self.started_at
+        if event != "notify":
+            raise ValueError(f"알 수 없는 이벤트: {event}")
+        session_id = msg.get("session_id")
+        if not session_id:
+            raise ValueError("session_id 없음")
+        project_name = msg.get("project_name", "알 수 없는 프로젝트")
+        text = msg.get("text", "")
+        kind = msg.get("kind", "stop")  # stop=완료 요약, notification=권한·질문 알림
+        stale = ts < self.started_at - STALE_NOTICE_S
+        record.log_event("notify", project_name=project_name, summary=text, notice=kind, stale=stale)
+        # 멈춘 세션의 완료 알림도 요약은 갱신하지만 멈춤은 풀지 않는다
+        self.table.upsert_from_notify(session_id, project_name, msg.get("socket_path", session_id),
+                                      msg.get("token", ""), summary=text)
+        if stale:
+            return False
+        # 4단계: Jev 종류 판단은 처음 1주 기록만 (읽기 기준은 아직 훅 종류)
+        from voice import judge as judge_mod
+        judged = (self._classify or judge_mod.classify_notice)(text)
+        if judged is not None:
+            record.log_event("notice_kind", project_name=project_name, notice_type=judged[0], conf=judged[1])
+        if should_speak_notice(self.tts_queue.ctx, kind):
+            self.tts_queue.enqueue(project_name, text)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +830,7 @@ def main():
     from voice.tts import TtsEngine  # 지연 임포트: 모델 로딩이 무거워서 main()에서만
     from voice.config import load_settings
 
+    started_at = time.time()
     settings = load_settings()
     language_code, voice_id = settings["language"], settings["voice_id"]
 
@@ -822,26 +841,26 @@ def main():
     table = SessionTable()
     tts_queue = TtsQueue(tts_engine)
     tts_queue.start()
+    inbox_dir().mkdir(parents=True, exist_ok=True)
+    watcher = InboxWatcher(table, tts_queue, started_at=started_at)
+    record.write_state([])
 
-    server = ListenerServer(table, tts_queue)
-    # 마이크 루프(호출어 → 받아쓰기 → 라우팅). 무거운 STT 모델은 스레드 안에서 로딩되고,
-    # 호출어 온보딩이 안 돼 있으면 로그만 남기고 스스로 끝난다 — 음성 요약(TCP)은 그대로 동작.
+    # 마이크 루프(호출어 → 받아쓰기 → 처리). 무거운 STT 모델은 스레드 안에서 로딩되고,
+    # 호출어 온보딩이 안 돼 있으면 로그만 남기고 스스로 끝난다 — 음성 요약(inbox)은 그대로 동작.
     mic_loop = MicLoop(table, tts_queue)
     mic_loop.start()
 
-    async def _main():
-        await server.start()
-        print(f"[listener] 대기 중... (Ctrl+C 또는 /voice-off로 종료)")
-        try:
-            await server._server.serve_forever()
-        except asyncio.CancelledError:
-            pass
-
+    print("[listener] 대기 중... (Ctrl+C 또는 /voice-off로 종료)")
     try:
-        asyncio.run(_main())
+        while not watcher.process_once():
+            time.sleep(INBOX_POLL_S)
     except KeyboardInterrupt:
         pass
     mic_loop.stop()
+    try:
+        alive_file().unlink()
+    except OSError:
+        pass
     print("\n[listener] 종료")
 
 

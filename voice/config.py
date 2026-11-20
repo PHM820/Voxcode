@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""voice-settings.json 읽기/쓰기 헬퍼.
+"""설정 읽기/쓰기 헬퍼.
+
+- 켜짐 여부(`enabled`)는 전역: `~/.voxcode/config.json`. 훅이 모든 프로젝트 세션에서 돌기 때문에
+  프로젝트 폴더의 파일로는 판단할 수 없다(4단계, 2026-11-20).
+- 언어·목소리 등 나머지는 이 프로젝트의 `.claude/voice-settings.json` (리스너가 이 폴더에서 돈다).
 
 docs/architecture.md "설정 파일과 프로세스 생명주기" 참고. 파일이 없으면
 기본값으로 동작해야 한다(설치 직후 별도 설정 없이 /voice-on만 실행하면 됨).
@@ -52,6 +56,18 @@ def save_settings(settings: dict[str, Any], path: Path = SETTINGS_PATH) -> None:
         f.write("\n")
 
 
-def is_enabled(path: Path = SETTINGS_PATH) -> bool:
-    """훅에서 쓰는 짧은 경로: 음성모드가 켜져 있는지만 빠르게 확인."""
-    return bool(load_settings(path).get("enabled", False))
+def _global_config_path() -> Path:
+    from voice import record
+    return record.home() / "config.json"
+
+
+def is_enabled() -> bool:
+    """훅에서 쓰는 짧은 경로: 음성모드가 켜져 있는지(전역). 파일이 없거나 깨졌으면 꺼짐."""
+    try:
+        return bool(json.loads(_global_config_path().read_text(encoding="utf-8")).get("enabled"))
+    except Exception:
+        return False
+
+
+def set_enabled(enabled: bool) -> None:
+    _global_config_path().write_text(json.dumps({"enabled": enabled}), encoding="utf-8")

@@ -88,5 +88,11 @@ assert set(qs["target"]["criteria"]) == {"s1", "s2", "all", "listener", "unknown
 empty_payload, _ = judge.build_payload("안녕", [])
 assert set(empty_payload["questions"]["target"]["criteria"]) == {"all", "listener", "unknown"}
 
+# --- 9. 알림 종류 판단(4단계, 기록용): 정상 / 옵션 밖 / 예외 / 키 없음 ---
+kind_ans = {"kind": {"type": "choice", "choice": "failed", "confidence": 0.93}}
+assert judge.classify_notice("테스트가 실패했습니다", ask=lambda p, k: kind_ans) == ("failed", 0.93)
+assert judge.classify_notice("x", ask=lambda p, k: {"kind": {"choice": "weird", "confidence": 1}}) is None
+assert judge.classify_notice("x", ask=boom) is None
 os.environ.pop("TYPESAFE_API_KEY", None)
+assert judge.classify_notice("x", ask=must_not_call) is None
 print("judge checks OK")

@@ -1,6 +1,6 @@
 ---
 name: voice-on
-description: 이 프로젝트의 음성모드(완료 음성 요약 + 음성 명령)를 켠다. 상주 리스너(voice/listener.py)가 안 떠 있으면 백그라운드로 띄우고, .claude/voice-settings.json의 enabled를 true로 기록한다.
+description: 음성모드(완료 음성 요약 + 음성 명령)를 켠다. 전역 훅 등록, 상주 리스너(voice/listener.py)와 하이쿠 서브 관리자 띄우기를 voice/control.py on 한 줄로 한다.
 ---
 
 # /voice-on — 음성모드 켜기
@@ -13,22 +13,19 @@ description: 이 프로젝트의 음성모드(완료 음성 요약 + 음성 명�
 0. **최초 실행이면 온보딩부터**: `voice/config.py`의 `load_settings()`로 `onboarded` 값을 확인한다.
    `false`(또는 파일 자체가 없음)면 아래 "온보딩" 섹션을 먼저 수행하고 나서 1번으로 진행한다.
    이미 `true`면 건너뛴다.
-1. **이미 떠 있는지 확인**: TCP `127.0.0.1:8765`에 연결을 시도한다. 연결되면 이미 떠 있는 것 —
-   4번으로 건너뛴다.
-2. **안 떠 있으면 백그라운드로 spawn**:
+1. **켜기**: 아래 한 줄을 실행한다(프로젝트 루트에서). 결과는 JSON 한 줄이다.
    ```
-   .venv\Scripts\python.exe -m voice.listener
+   .venv\Scripts\python.exe -m voice.control on
    ```
-   Windows에서 터미널에 매인 채로 뜨지 않도록 분리해서 실행한다(예:
-   `subprocess.Popen([...], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)`
-   또는 동등한 방식). 표준출력은 `.scratch/listener.log` 등으로 리다이렉트해 나중에 확인 가능하게 한다.
-3. **기동 확인**: 1~2초 대기 후 다시 TCP 연결을 시도해 실제로 떴는지 확인한다. 안 뜨면
-   `.scratch/listener.log`(또는 리다이렉트한 파일)를 읽어 원인을 그대로 사용자에게 보여준다 —
-   추측으로 "됐을 것"이라고 보고하지 않는다.
-4. **설정 갱신**: `voice/config.py`의 `load_settings()`/`save_settings()`를 사용해
-   `.claude/voice-settings.json`의 `enabled`를 `true`로 쓴다. 파일이 없으면 새로 만들어진다
-   (기본값 + `enabled: true`).
-5. 결과를 한 줄로 보고한다: 새로 띄웠는지 이미 떠 있었는지, `enabled` 값.
+   이 명령이 차례로 한다: 켜짐 표시(`~/.voxcode/config.json`) → **사용자 전역 설정
+   `~/.claude/settings.json`에 Voxcode 훅 3개 등록**(다른 프로젝트 세션도 알림을 보내게, 끄면 해제됨,
+   백업 `settings.json.voxcode.bak`) → 리스너가 안 떠 있으면 띄우고 최대 60초 기다림 → **하이쿠 서브 관리자
+   창을 새 콘솔로 띄움**(계속 켜 둠 — Claude 사용량이 든다).
+   - 관리자 없이 켜려면 `on --no-manager`.
+   - 관리자 창이 처음 뜰 때 폴더 신뢰 확인이 나오면 사용자가 한 번 눌러야 한다고 알린다.
+2. **결과 보고**: JSON의 `listener`가 `failed`면 `log_tail`을 그대로 보여 준다(추측 금지). 성공이면
+   "리스너 새로 띄움/이미 떠 있음, 전역 훅 등록, 관리자 띄움" 한 줄로 보고한다.
+   다른 프로젝트 세션은 **이미 열려 있던 세션도** 다음 응답부터 훅이 돈다(설정 파일을 다시 읽음 — 안 되면 그 세션 재시작).
 
 ## 온보딩 (최초 1회)
 
@@ -71,9 +68,7 @@ description: 이 프로젝트의 음성모드(완료 음성 요약 + 음성 명�
 
 ## 확인해야 할 것
 
-- 이 프로젝트는 `/delegate`, `/delegate-all`의 하위 작업자(워커, `.claude/worktrees/` 아래
-  세션)에는 적용되지 않는다 — 그 세션들은 훅 자체가 조용히 무시하도록 이미 되어 있다
-  (`hooks/on-stop.py`, `hooks/on-notification.py`의 `_is_delegate_worker()`). `/voice-on`은
-  관리자 세션에서만 의미가 있다.
+- 작업자 세션(`.claude/worktrees/` 아래)과 서브 관리자 세션(`~/.voxcode/manager/`)은 훅이 프로젝트로
+  알리지 않는다(`hooks/_common.py`).
 - `.venv`가 없으면(설치 안 된 상태) "먼저 `setup.cmd`를 실행하세요"로 안내하고 멈춘다 — 없는
   venv로 spawn을 시도하지 않는다.

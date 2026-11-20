@@ -19,7 +19,7 @@ GitHub: https://github.com/PHM820/Voxcode (비공개)
 - Claude Code 공식 스크린리더 모드·터미널 벨 알림이 이미 하는 일은 다시 만들지 않는다 — 그 위에 훅으로 얹는다.
 - TTS는 sherpa-onnx(언어별 모델 교체), STT는 whisper.cpp(pywhispercpp)를 기본으로 한다(실측 검증됨, `docs/decisions.md` 참고).
 - 공개 배포 예정 프로젝트이므로 키·개인 경로를 코드에 하드코딩하지 않는다.
-- **음성모드가 켜진 이 프로젝트에서 응답할 때(`.claude/voice-settings.json`의 `enabled: true`)만
+- **음성모드가 켜진 이 프로젝트에서 응답할 때(`~/.voxcode/config.json`의 `enabled: true`)만
   적용, `enabled: false`(기본값)면 아래 지침은 무시할 것 — 켤 때마다 이 문단을 지웠다 썼다 하지
   않고 항상 두되 값으로만 켜고 끈다**:
   이 응답의 끝(`last_assistant_message`)은 상주 리스너가 그대로 TTS로 읽는다(`hooks/on-stop.py`).

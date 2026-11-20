@@ -38,14 +38,14 @@ assert "Write(./answers/**)" in (MDIR / ".claude" / "settings.json").read_text(e
 import _common  # noqa: E402
 os.environ["CLAUDE_CODE_MESSAGING_SOCKET"] = r"\\.\pipe\mgr-test"
 os.environ["CLAUDE_CODE_MESSAGING_TOKEN"] = "mgr-token"
-sent_to_listener = []
-real_socket = _common.socket.create_connection
-_common.socket.create_connection = lambda *a, **k: sent_to_listener.append(a) or (_ for _ in ()).throw(OSError())
 _common.notify_listener("대기", str(MDIR))
-_common.socket.create_connection = real_socket
-assert manager.load_session() == {"socket_path": r"\\.\pipe\mgr-test", "token": "mgr-token",
-                                  "ts": manager.load_session()["ts"]}
-assert not sent_to_listener, "관리자 세션이 프로젝트로 리스너에 알림"
+sess = manager.load_session()
+assert sess["socket_path"] == r"\\.\pipe\mgr-test" and sess["token"] == "mgr-token", sess
+assert not list(HOME.glob("inbox/*.json")), "관리자 세션이 프로젝트로 리스너에 알림"
+_common.notify_listener("완료", str(HOME))  # 관리자 폴더가 아니면 inbox에 남는다 (대조군)
+assert len(list(HOME.glob("inbox/*.json"))) == 1
+for f in HOME.glob("inbox/*.json"):
+    f.unlink()
 assert manager.is_manager_cwd(str(MDIR)) and not manager.is_manager_cwd(".")
 
 
