@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -168,6 +169,15 @@ def route_command(table: SessionTable) -> Optional[SessionState]:
 
 def _has_stop_word(text: str) -> bool:
     return any(w in text for w in STOP_WORDS)
+
+
+# "대기": 아무 데도 보내지 않고 다시 호출어를 기다린다. 문장 전체가 이 말일 때만 —
+# "대기열 기능 만들어" 같은 지시를 삼키지 않게 부분 일치는 쓰지 않는다.
+WAIT_WORDS = ("대기", "대기해", "대기해줘", "대기해요", "대기할게", "대기상태")
+
+
+def _is_wait(text: str) -> bool:
+    return re.sub(r"[\s.,!?~…]", "", text) in WAIT_WORDS
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +342,12 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
         return {"mode": mode, "beep_twice": not targets and not say,
                 "targets": [t.project_name for t in targets], "say": say,
                 "results": results, "decision": None}
+
+    # "대기"는 규칙으로 바로 끝낸다 — Jev·관리자를 부르지 않고, 폴백으로 세션에 새지 않게
+    if _is_wait(text):
+        record.log_event("decision", text=text, mode="wait", target=[], source="rule", reason="대기")
+        return {"mode": "wait", "beep_twice": True, "targets": [], "say": "",
+                "results": [], "decision": None}
 
     try:
         d = judge_fn(text, [

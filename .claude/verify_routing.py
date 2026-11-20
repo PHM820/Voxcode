@@ -184,6 +184,25 @@ assert not listener.should_speak_notice(ctx, "stop") and listener.should_speak_n
 route_and_send(t, "다 알려줘", judge_fn=fixed("verbose", "listener"), send=s, ctx=ctx)
 assert not ctx.quiet and listener.should_speak_notice(ctx, "stop") and not s.calls
 
+# --- 13. "대기": 아무 데도 안 보냄, 판단기·관리자도 안 부름, 삑 두 번 ---
+def judge_must_not_run(text, sessions):
+    raise AssertionError("대기인데 판단기가 호출됨")
+def manager_must_not_run(q):
+    raise AssertionError("대기인데 관리자가 호출됨")
+for said in ("대기", "대기해.", " 대기 해 줘 ", "대기!"):
+    t, s = two_sessions(), Sender()
+    r = route_and_send(t, said, judge_fn=judge_must_not_run, send=s, ask_manager=manager_must_not_run)
+    assert r["mode"] == "wait" and r["beep_twice"] and not s.calls and not r["say"], (said, r)
+# 전체 지시 확인 중에 "대기" → 확인을 버리고 아무것도 안 보냄
+t, s, ctx = two_sessions(), Sender(), listener.ListenerContext()
+route_and_send(t, "다들 커밋해", judge_fn=fixed("instruct_all", "all"), send=s, ctx=ctx)
+r = route_and_send(t, "대기", judge_fn=judge_must_not_run, send=s, ctx=ctx)
+assert r["mode"] == "wait" and not s.calls and ctx.pending_all is None, r
+# "대기"가 들어간 지시는 삼키지 않는다
+t, s = two_sessions(), Sender()
+r = route_and_send(t, "대기열 기능 만들어줘", judge_fn=fixed("instruct", "k-a"), send=s)
+assert r["mode"] == "instruct" and s.calls == [("proj-a", "대기열 기능 만들어줘")], r
+
 # --- 12. 옛 규칙이 남아 있지 않음 ---
 for gone in ("mark_detached", "mark_attached", "find_by_project_prefix"):
     assert not hasattr(SessionTable, gone), gone
