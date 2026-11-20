@@ -197,7 +197,7 @@ def classify_notice(text: str, ask: Optional[AskFn] = None) -> Optional[tuple[st
             return None
         payload = {
             "model": JEV_MODEL,
-            "state": f"코딩 작업 세션이 보낸 알림: {text[:SUMMARY_MAX_CHARS * 2]}",
+            "state": f"코딩 작업 세션이 보낸 알림: {text[:SUMMARY_MAX_CHARS]}",
             "questions": {"kind": {"type": "choice", "instructions": "이 알림의 종류를 고르라.",
                                    "criteria": dict(NOTICE_KINDS)}},
         }

@@ -112,6 +112,8 @@ drop("7.json", {"event": "shutdown", "ts": started - 5})  # 리스너가 켜지�
 assert w.process_once() is False, "켜지기 전 종료 신호로 꺼짐"
 assert tts.items == [("proj-a", "끝났어요")], tts.items
 assert table.get("s-old") is not None, "오래된 알림의 세션이 등록 안 됨"
+assert table.get("s-old").last_notify_at == started - 600, "오래된 알림이 방금 온 알림처럼 기록됨"
+assert listener.route_command(table).project_name == "proj-a", "꺼져 있던 동안의 세션이 기본 대상이 됨"
 assert sorted(p.name for p in (inbox / "bad").iterdir()) == ["2.json", "3.json", "4.json"]
 assert sorted(p.name for p in inbox.iterdir() if p.is_file()) == ["5.tmp"], "처리한 파일이 남음"
 assert w.process_once() is False, "깨진 파일을 다시 읽음"

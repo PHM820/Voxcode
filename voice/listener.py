@@ -77,8 +77,10 @@ class SessionTable:
         record.write_state(self.all_sessions())
 
     def upsert_from_notify(self, session_id: str, project_name: str,
-                            socket_path: str, token: str, summary: str = "") -> SessionState:
-        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성). paused는 건드리지 않는다."""
+                            socket_path: str, token: str, summary: str = "",
+                            at: Optional[float] = None) -> SessionState:
+        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성). paused는 건드리지 않는다.
+        at: 알림 시각(기본 지금). 리스너가 꺼져 있던 동안 쌓인 알림은 원래 시각을 써서 "방금 알림 온 세션"이 되지 않게."""
         with self._lock:
             st = self._sessions.get(session_id)
             if st is None:
@@ -91,7 +93,7 @@ class SessionTable:
                 st.token = token
             if summary:
                 st.last_summary = summary
-            st.last_notify_at = time.time()
+            st.last_notify_at = time.time() if at is None else at
         self._save()
         return st
 
@@ -809,7 +811,7 @@ class InboxWatcher:
         record.log_event("notify", project_name=project_name, summary=text, notice=kind, stale=stale)
         # 멈춘 세션의 완료 알림도 요약은 갱신하지만 멈춤은 풀지 않는다
         self.table.upsert_from_notify(session_id, project_name, msg.get("socket_path", session_id),
-                                      msg.get("token", ""), summary=text)
+                                      msg.get("token", ""), summary=text, at=ts if stale else None)
         if stale:
             return False
         # 4단계: Jev 종류 판단은 처음 1주 기록만 (읽기 기준은 아직 훅 종류)
