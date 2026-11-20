@@ -367,7 +367,7 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
                       and not (ok_target and (table.get(d.target) or d.target == judge_mod.TARGET_ALL)))
     if not ok_cmd or target_unclear:
         ans = ask_manager({
-            "type": "judge", "text": text, "commands": list(judge_mod.COMMANDS),
+            "type": "judge", "text": text, "commands": judge_mod.COMMAND_HELP,
             "jev": None if d is None else {"command": d.command, "command_conf": d.command_conf,
                                            "target_conf": d.target_conf},
             "sessions": [{"project": s.project_name, "paused": s.paused, "summary": s.last_summary}
@@ -414,8 +414,15 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
         else:
             mode, say = "no_target", "보낼 프로젝트가 없습니다."
     elif d.command == "instruct":
-        st = target_session() or route_command(table)
+        st = target_session()
+        # 판단기가 "프로젝트가 아니라 비서에게 한 말"이라고 확신하면 최근 알림 세션으로 흘리지 않는다
+        # (2026-11-20: Voxcode에 대한 의견이 백업하던 다른 세션으로 간 사고)
+        to_listener = ok_target and d.target == judge_mod.TARGET_LISTENER and len(sessions) > 1
+        if st is None and not to_listener:
+            st = route_command(table)
         mode, targets = ("instruct", [st]) if st else ("no_target", [])
+        if to_listener and st is None:
+            say = "어느 프로젝트에 하는 말인지 모르겠어요. 프로젝트 이름을 넣어 다시 말해 주세요."
         if st is not None and st.paused and (ok_target or len(sessions) == 1):
             pause_after = False  # 사용자가 그 세션을 직접 불렀다
     elif d.command == "stop_all" or (d.command == "stop" and ok_target and d.target == judge_mod.TARGET_ALL):

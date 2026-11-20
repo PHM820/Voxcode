@@ -42,7 +42,13 @@ CLAUDE_MD = """# Voxcode 음성 명령 중재자
   **JSON 하나만** 써라(Write 도구). 다른 설명은 쓰지 말고 응답 텍스트는 "완료" 한 단어.
 - 질문 `type`이 `judge`면:
   `{"command": "<commands 중 하나>", "target": "<sessions의 project 그대로 | all | listener | unknown>", "ask_back": "<모르겠으면 사용자에게 되물을 짧은 한국어 문장, 알면 빈 문자열>"}`
+  - `commands`는 {명령: 설명}이다. 설명을 따라 골라라.
   - 사용자는 한국어로 말하고 프로젝트 이름은 영어 폴더명이다. 뜻·발음·요약·최근 기록으로 연결하라.
+  - `noise`는 사람이 비서나 프로젝트에게 한 말이 아닐 때만(TV·다른 사람 말·음성인식이 지어낸 문장).
+    사용자의 감상·피드백·혼잣말 같은 지시("잘 되네", "이거 너무 쉽게 버리는 것 같아")는 noise가 아니라 instruct.
+  - `target: listener`는 list·repeat·quiet·verbose·status·catch_up처럼 비서가 직접 답하는 명령에만 쓴다.
+    음성 비서(Voxcode) 자체에 대한 의견·고칠 점은 sessions 중 그 비서를 만드는 프로젝트(이름·요약에
+    Voxcode·음성·호출어·리스너)로 보내라. 그런 프로젝트가 없으면 unknown + ask_back.
   - 확신이 없으면 추측하지 말고 ask_back에 "번개장터요, 축구요?"처럼 고를 수 있게 물어라.
 - `type`이 `summarize`면: `{"say": "<instruction대로 쓴 한두 문장 한국어>"}` — 귀로 듣는 문장이니
   기호·경로·목록 없이 짧게.
@@ -159,11 +165,20 @@ def ask(question: dict, timeout: float = ASK_TIMEOUT_S, send: Optional[SendFn] =
 # ---------------------------------------------------------------------------
 
 def launch() -> int:
-    """새 콘솔 창에서 Haiku 관리자 세션을 띄우고 cmd PID를 기록한다. 사용량이 드는 실행."""
+    """새 PowerShell 창(최소화)에서 Haiku 관리자 세션을 띄우고 PowerShell PID를 기록한다. 사용량이 드는 실행.
+
+    cmd는 학교·회사 정책으로 막힌 컴퓨터가 있어 PowerShell을 쓴다. 프롬프트는 따옴표 문제를 피하려고
+    환경변수로 넘긴다. 창은 최소화 상태로, 작업 표시줄에서 열어 볼 수 있다.
+    """
     d = prepare()
+    env = dict(os.environ, VOX_MODEL=MANAGER_MODEL, VOX_PROMPT=FIRST_PROMPT)
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7  # SW_SHOWMINNOACTIVE: 최소화, 포커스 안 뺏음
     proc = subprocess.Popen(
-        ["cmd", "/k", "claude", "--model", MANAGER_MODEL, "--permission-mode", "acceptEdits", FIRST_PROMPT],
-        cwd=str(d), creationflags=subprocess.CREATE_NEW_CONSOLE,
+        ["powershell", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command",
+         "& claude --model $env:VOX_MODEL --permission-mode acceptEdits $env:VOX_PROMPT"],
+        cwd=str(d), env=env, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=si,
     )
     (d / "pid").write_text(str(proc.pid), encoding="utf-8")
     return proc.pid
@@ -171,15 +186,15 @@ def launch() -> int:
 
 def is_running() -> bool:
     pid = _read_pid()
-    return pid is not None and _is_cmd_process(pid)
+    return pid is not None and _is_shell_process(pid)
 
 
 def stop() -> bool:
-    """띄운 관리자 창(cmd와 그 아래 claude)을 끈다. 끈 게 있으면 True."""
+    """띄운 관리자 창(셸과 그 아래 claude)을 끈다. 끈 게 있으면 True."""
     d = manager_dir()
     pid = _read_pid()
     stopped = False
-    if pid is not None and _is_cmd_process(pid):
+    if pid is not None and _is_shell_process(pid):
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
         stopped = True
     for name in ("pid", "session.json"):
@@ -197,8 +212,8 @@ def _read_pid() -> Optional[int]:
         return None
 
 
-def _is_cmd_process(pid: int) -> bool:
+def _is_shell_process(pid: int) -> bool:
     """PID가 다른 프로그램에 재사용됐으면 끄지 않도록 이름까지 확인."""
     out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                          capture_output=True, encoding="utf-8", errors="replace").stdout
-    return '"cmd.exe"' in out.lower()
+    return any(n in out.lower() for n in ('"powershell.exe"', '"cmd.exe"'))   # 예전에 cmd로 띄운 관리자도 끈다

@@ -209,6 +209,20 @@ for gone in ("mark_detached", "mark_attached", "find_by_project_prefix"):
 for gone in ("parse_stop_command", "STOP_PREFIX", "should_drop_transcript"):
     assert not hasattr(listener, gone), gone
 
+# --- 15. 비서에게 한 지시(target=listener)는 최근 알림 세션으로 흘리지 않는다 (2026-11-20 오배송) ---
+t, s = two_sessions(), Sender()
+r = route_and_send(t, "노이즈 판단이 너무 쉬운 것 같아 확인해봐", judge_fn=lambda text, sessions: None, send=s,
+                   ask_manager=lambda q: {"command": "instruct", "target": "listener", "ask_back": ""})
+assert r["mode"] == "no_target" and not s.calls and r["say"], f"비서에게 한 말이 다른 세션으로 감: {r}"
+t, s = two_sessions(), Sender()  # 관리자가 프로젝트를 고르면 그대로
+r = route_and_send(t, "노이즈 판단 확인해봐", judge_fn=lambda text, sessions: None, send=s,
+                   ask_manager=lambda q: {"command": "instruct", "target": "proj-a", "ask_back": ""})
+assert s.calls == [("proj-a", "노이즈 판단 확인해봐")], r
+seen = []
+route_and_send(two_sessions(), "뭔가 해줘", judge_fn=lambda text, sessions: None, send=Sender(),
+               ask_manager=lambda q: seen.append(q) or {"command": "noise", "target": "unknown", "ask_back": ""})
+assert isinstance(seen[0]["commands"], dict) and "noise" in seen[0]["commands"], "관리자에게 명령 설명이 안 감"
+
 # --- 14. 호출어: 받아쓴 글자로 확인 (마이크·모델 없이 VAD와 받아쓰기를 바꿔 끼움) ---
 import numpy as np  # noqa: E402
 from voice import wakeword  # noqa: E402
