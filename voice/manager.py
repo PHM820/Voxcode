@@ -41,7 +41,9 @@ CLAUDE_MD = """# Voxcode 음성 명령 중재자
 - `[Voxcode 질문 <id>]` 메시지가 오면 `questions/<id>.json`을 읽고, 답을 `answers/<id>.json`에
   **JSON 하나만** 써라(Write 도구). 다른 설명은 쓰지 말고 응답 텍스트는 "완료" 한 단어.
 - 질문 `type`이 `judge`면:
-  `{"command": "<commands 중 하나>", "target": "<sessions의 project 그대로 | all | listener | unknown>", "ask_back": "<모르겠으면 사용자에게 되물을 짧은 한국어 문장, 알면 빈 문자열>"}`
+  `{"command": "<commands 중 하나>", "target": "<sessions의 project 그대로 | all | listener | unknown>", "ask_back": "<모르겠으면 사용자에게 되물을 짧은 한국어 문장, 알면 빈 문자열>", "meaning": "<사용자가 하려는 말을 받아쓰기 오류까지 고려해 풀어쓴 한국어 한 문장>"}`
+  - `meaning`은 원문과 함께 그 세션에 참고용으로 전달된다. 받아쓰기가 틀린 단어는 바로잡아 써라
+    (예: "박스코드" → "Voxcode", "영상 모드" → 아마 "음성 모드"). 확실하지 않은 부분은 "아마"라고 써라.
   - `commands`는 {명령: 설명}이다. 설명을 따라 골라라.
   - 사용자는 한국어로 말하고 프로젝트 이름은 영어 폴더명이다. 뜻·발음·요약·최근 기록으로 연결하라.
   - `noise`는 사람이 비서나 프로젝트에게 한 말이 아닐 때만(TV·다른 사람 말·음성인식이 지어낸 문장).
@@ -50,6 +52,9 @@ CLAUDE_MD = """# Voxcode 음성 명령 중재자
     음성 비서(Voxcode) 자체에 대한 의견·고칠 점은 sessions 중 그 비서를 만드는 프로젝트(이름·요약에
     Voxcode·음성·호출어·리스너)로 보내라. 그런 프로젝트가 없으면 unknown + ask_back.
   - 확신이 없으면 추측하지 말고 ask_back에 "번개장터요, 축구요?"처럼 고를 수 있게 물어라.
+- `type`이 `reroute`면: 앞서 보낸 음성 지시를 `rejected_by` 프로젝트가 "자기 일이 아니다"(`reason`)라고
+  돌려보낸 것이다. `sessions`(거절한 곳은 빠져 있음) 중 맞는 곳을 judge와 같은 JSON으로 골라라.
+  맞는 곳이 없으면 target을 unknown으로 하고 ask_back에 어느 프로젝트인지 물어라.
 - `type`이 `summarize`면: `{"say": "<instruction대로 쓴 한두 문장 한국어>"}` — 귀로 듣는 문장이니
   기호·경로·목록 없이 짧게.
 

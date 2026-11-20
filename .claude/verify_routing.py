@@ -28,8 +28,11 @@ class Sender:
 
     def __init__(self):
         self.calls = []
+        self.raw = []  # 실제로 보낸 문장(원문·해석 틀 포함)
 
     def __call__(self, session, text):
+        self.raw.append(text)
+        text = listener.unwrap_voice(text)
         heard = [json.loads(l) for l in LOG.read_text(encoding="utf-8").splitlines()]
         assert any(e["kind"] == "heard" and e["text"] == text for e in heard), "기록 전에 전달됨"
         self.calls.append((session.project_name, text))
@@ -226,9 +229,83 @@ assert isinstance(seen[0]["commands"], dict) and "noise" in seen[0]["commands"],
 # --- 16. 관리자가 명령을 골랐어도 되물을 문장을 함께 쓰면 실행하지 않고 그 질문을 읽는다 ---
 t, s = two_sessions(), Sender()
 ctx = listener.ListenerContext()
-r = route_and_send(t, "영상 모드 꺼져", judge_fn=lambda text, sessions: None, send=s, ctx=ctx,
+r = route_and_send(t, "알림 좀 그거", judge_fn=lambda text, sessions: None, send=s, ctx=ctx,
                    ask_manager=lambda q: {"command": "quiet", "target": "listener", "ask_back": "알림을 조용히 할까요?"})
 assert r["mode"] == "ask_back" and r["say"] == "알림을 조용히 할까요?" and not ctx.quiet and not s.calls, r
+
+# --- 17. 세션에는 원문 + 관리자 해석(참고용) + "잘못 온 말이면 이렇게 답해" 안내를 보낸다 ---
+t, s = two_sessions(), Sender()
+route_and_send(t, "박스코드 노이즈 고쳐", judge_fn=lambda text, sessions: None, send=s,
+               ask_manager=lambda q: {"command": "instruct", "target": "proj-a", "ask_back": "",
+                                      "meaning": "Voxcode의 잡음 판단을 고쳐 달라는 말"})
+sent = s.raw[-1]
+assert s.calls == [("proj-a", "박스코드 노이즈 고쳐")], s.calls
+assert "Voxcode의 잡음 판단을 고쳐 달라는 말" in sent and "참고" in sent and listener.MISROUTE_MARK in sent, sent
+t, s = two_sessions(), Sender()  # Jev가 바로 정한 지시: 해석 줄은 없고 안내는 있음
+route_and_send(t, "키워드 추가해", judge_fn=fixed("instruct", "k-a"), send=s)
+assert "해석(" not in s.raw[-1] and listener.MISROUTE_MARK in s.raw[-1], s.raw
+t, s = two_sessions(), Sender()  # 멈춰는 틀 없이 그대로
+route_and_send(t, "proj-a 멈춰", judge_fn=fixed("stop", "k-a"), send=s)
+assert s.raw == ["proj-a 멈춰"], s.raw
+
+# --- 18. 세션이 "잘못 온 말"이라고 답하면 관리자가 다른 세션을 다시 고른다 (한 번만) ---
+t, s = two_sessions(), Sender()
+route_and_send(t, "다음 작업 해줘", judge_fn=lambda text, sessions: None, send=s)  # 폴백 → proj-b
+assert s.calls == [("proj-b", "다음 작업 해줘")] and t.get("k-b").last_voice
+asked = []
+def picks_a(q):
+    asked.append(q)
+    return {"command": "instruct", "target": "proj-a", "ask_back": "", "meaning": "a에 하는 말"}
+r = listener.reroute(t, t.get("k-b"), "백업 세션이라 상관없음", send=s, ask_manager=picks_a)
+assert r["mode"] == "rerouted" and s.calls[-1] == ("proj-a", "다음 작업 해줘") and r["say"], r
+assert asked[0]["type"] == "reroute" and [x["project"] for x in asked[0]["sessions"]] == ["proj-a"], asked
+assert "a에 하는 말" in s.raw[-1] and t.get("k-b").last_voice is None
+t.upsert_from_notify("k-c", "proj-c", "k-c", "tok3", summary="c 요약")  # 남은 세션이 있어도
+n = len(s.calls)  # proj-a도 거절하면 더 돌리지 않는다 (다시 보내기는 한 번만)
+r = listener.reroute(t, t.get("k-a"), "이것도 아님", send=s, ask_manager=manager_must_not_run)
+assert r["mode"] == "reroute_gave_up" and len(s.calls) == n and r["say"], r
+t, s = two_sessions(), Sender()  # 관리자가 거절한 곳을 다시 고르면 보내지 않는다
+route_and_send(t, "다음 작업 해줘", judge_fn=lambda text, sessions: None, send=s)
+r = listener.reroute(t, t.get("k-b"), "아님", send=s,
+                     ask_manager=lambda q: {"command": "instruct", "target": "proj-b", "ask_back": ""})
+assert r["mode"] == "reroute_gave_up" and len(s.calls) == 1, r
+
+
+class SpeakSpy:
+    def __init__(self):
+        self.items, self.ctx = [], listener.ListenerContext()
+
+    def enqueue(self, project, summary):
+        self.items.append((project, summary))
+
+
+import time as _time  # noqa: E402
+t, spy, rerouted = two_sessions(), SpeakSpy(), []
+route_and_send(t, "다음 작업 해줘", judge_fn=lambda text, sessions: None, send=Sender())
+w = listener.InboxWatcher(t, spy, started_at=_time.time() - 1, classify=lambda x: None,
+                          reroute_fn=lambda st, reason: rerouted.append((st.project_name, reason)))
+note = {"event": "notify", "kind": "stop", "session_id": "k-b", "socket_path": "k-b", "token": "t",
+        "project_name": "proj-b", "ts": _time.time()}
+w.handle({**note, "text": f"{listener.MISROUTE_MARK} 백업 세션이라 상관없음"})
+assert rerouted == [("proj-b", "백업 세션이라 상관없음")] and spy.items == [], (rerouted, spy.items)
+w.handle({**note, "text": "끝났습니다"})
+assert spy.items == [("proj-b", "끝났습니다")], spy.items
+
+# --- 19. "음성모드 꺼"는 한 번 되묻고, "응"이어야 끈다 ---
+for said in ("음성모드 꺼줘", "영상 모드 꺼져", "자비스 꺼", "보이스 모드 종료"):
+    t, s, ctx, offs = two_sessions(), Sender(), listener.ListenerContext(), []
+    r = route_and_send(t, said, judge_fn=judge_must_not_run, send=s, ctx=ctx, ask_manager=manager_must_not_run,
+                       turn_off=lambda: offs.append(1))
+    assert r["mode"] == "confirm_off" and r["say"] and not offs and not s.calls, (said, r)
+    r = route_and_send(t, "응", judge_fn=judge_must_not_run, send=s, ctx=ctx, ask_manager=manager_must_not_run,
+                       turn_off=lambda: offs.append(1))
+    assert r["mode"] == "voice_off" and offs == [1] and not s.calls, (said, r)
+t, s, ctx, offs = two_sessions(), Sender(), listener.ListenerContext(), []
+route_and_send(t, "음성모드 꺼", judge_fn=judge_must_not_run, send=s, ctx=ctx, turn_off=lambda: offs.append(1))
+r = route_and_send(t, "아니", judge_fn=judge_must_not_run, send=s, ctx=ctx, turn_off=lambda: offs.append(1))
+assert r["mode"] == "voice_off_cancelled" and not offs, r
+for said in ("음성 인식 정확도 올려", "대기열 만들어", "모드 바꿔"):
+    assert not listener._is_voice_off(said), said
 
 # --- 14. 호출어: 받아쓴 글자로 확인 (마이크·모델 없이 VAD와 받아쓰기를 바꿔 끼움) ---
 import numpy as np  # noqa: E402

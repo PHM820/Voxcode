@@ -17,7 +17,7 @@ os.environ["VOXCODE_HOME"] = str(HOME)
 sys.path.insert(0, ".")
 sys.path.insert(0, "hooks")
 
-from voice import manager, record  # noqa: E402
+from voice import listener, manager, record  # noqa: E402
 from voice.judge import Decision  # noqa: E402
 from voice.listener import ListenerContext, SessionTable, route_and_send  # noqa: E402
 
@@ -78,7 +78,8 @@ class Sender:
         self.calls = []
 
     def __call__(self, session, text):
-        self.calls.append((session.project_name, text))
+        self.raw = getattr(self, "raw", []) + [text]
+        self.calls.append((session.project_name, listener.unwrap_voice(text)))
         return subprocess.CompletedProcess([], 0, "", "")
 
 

@@ -64,6 +64,9 @@ class SessionState:
     # 기본 대상에서 빠진다. 완료 알림(notify)으로는 풀리지 않는다 — 멈춘 세션이 정리하며
     # 보낸 완료 알림이 다시 기본 대상으로 만들면 안 되기 때문.
     paused: bool = False
+    # 이 세션에 마지막으로 보낸 음성 지시: {"text", "meaning", "tried"(이미 거절한 프로젝트들), "at"}.
+    # 세션이 "잘못 온 말"이라고 답하면 이걸로 다른 세션을 다시 고른다.
+    last_voice: Optional[dict] = None
 
 
 class SessionTable:
@@ -130,6 +133,7 @@ class ListenerContext:
     last_catchup: str = ""  # "밀린 거 듣기"를 마지막으로 한 시각(ISO) — 그 뒤 소식만 읽는다
     # 전체 지시 확인 대기: (보낼 문장, 대상 session_id 목록, 만료 monotonic 시각)
     pending_all: Optional[tuple] = None
+    pending_off: Optional[float] = None  # "음성모드 끌까요?" 확인 대기 만료(monotonic)
 
     def set_quiet(self, quiet: bool) -> None:
         self.quiet = quiet
@@ -180,6 +184,48 @@ def _is_wait(text: str) -> bool:
     return re.sub(r"[\s.,!?~…]", "", text) in WAIT_WORDS
 
 
+# "음성모드 꺼" 류. 받아쓰기가 "영상 모드"로 적기도 해서(실측) 넣었다. 끄기 전에 한 번 되묻는다.
+_VOICE_OFF = re.compile(r"(음성|영상|보이스|voice|자비스|박스코드|복스코드|voxcode)\s*(모드)?\s*(좀\s*)?"
+                        r"(꺼|끄|종료|그만)", re.IGNORECASE)
+
+
+def _is_voice_off(text: str) -> bool:
+    return bool(_VOICE_OFF.search(text))
+
+
+def _spawn_voice_off(delay_s: float = 4.0) -> None:
+    """음성모드를 끈다. 리스너가 자기 자신을 끄는 것이라 따로 떨어진 프로세스로, 인사를 읽을 시간만큼 늦게."""
+    code = f"import time; time.sleep({delay_s}); from voice import control; control.off()"
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen([sys.executable, "-c", code], cwd=str(PROJECT_ROOT), creationflags=flags,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# 세션에 보내는 음성 지시의 틀. 받아쓰기·해석은 틀릴 수 있으니 세션이 자기 맥락으로 판단하게 하고,
+# 이 프로젝트와 전혀 상관없는 말이면 MISROUTE_MARK로 답하게 한다 → 리스너가 서브 관리자에게 다시 맡김.
+MISROUTE_MARK = "[Voxcode 잘못 온 말]"
+REROUTE_MAX = 1          # 다시 보내기는 한 번만 (세션끼리 핑퐁 방지)
+REROUTE_WINDOW_S = 600.0  # 이보다 오래된 지시에 대한 "잘못 온 말"은 무시
+
+
+def wrap_voice(text: str, meaning: str = "") -> str:
+    lines = [f'[Voxcode 음성 명령] 원문(받아쓰기): "{text}"']
+    if meaning.strip() and meaning.strip() != text.strip():
+        lines.append(f"해석(서브 관리자, 참고만 — 틀릴 수 있음): {meaning.strip()}")
+    lines.append("받아쓰기와 해석은 틀릴 수 있으니 이 프로젝트의 맥락으로 판단해 줘. 이 프로젝트와 전혀 상관없는 "
+                 f'말이면 작업하지 말고 응답 전체를 "{MISROUTE_MARK} <이유 한 줄>"로만 해 줘.')
+    return "\n".join(lines)
+
+
+_WRAP_FIRST = re.compile(r'^\[Voxcode 음성 명령\] 원문\(받아쓰기\): "(.*)"$')
+
+
+def unwrap_voice(sent: str) -> str:
+    """wrap_voice로 씌운 메시지에서 원문만 꺼낸다(틀이 없으면 그대로). 테스트·기록용."""
+    m = _WRAP_FIRST.match(sent.split("\n", 1)[0])
+    return m.group(1) if m else sent
+
+
 # ---------------------------------------------------------------------------
 # inject.js 호출 (postback)
 # ---------------------------------------------------------------------------
@@ -211,11 +257,15 @@ def send_postback(session: SessionState, text: str) -> subprocess.CompletedProce
 # 받아쓴 문장 처리: 기록 → 판단(규칙·Jev) → 전달
 # ---------------------------------------------------------------------------
 
-def _deliver(table: SessionTable, targets: list[SessionState], text: str, send) -> list[dict]:
+def _deliver(table: SessionTable, targets: list[SessionState], text: str, send,
+             voice: Optional[dict] = None) -> list[dict]:
+    """voice가 있으면(일반 지시) 원문·해석 틀을 씌워 보내고 세션에 기억한다. 멈춰·다시 시작은 그대로."""
     results = []
     for st in targets:
+        if voice is not None:
+            st.last_voice = {**voice, "at": time.time()}
         try:
-            proc = send(st, text)
+            proc = send(st, wrap_voice(text, voice.get("meaning", "")) if voice is not None else text)
             ok = proc.returncode == 0
             detail = (proc.stderr or "").strip()[-300:]
         except Exception as e:  # noqa: BLE001 - 한 세션 실패가 나머지 전달을 막으면 안 됨
@@ -307,7 +357,7 @@ def _is_reply(text: str, words) -> bool:
 
 
 def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
-                   ctx: Optional[ListenerContext] = None, ask_manager=None) -> dict:
+                   ctx: Optional[ListenerContext] = None, ask_manager=None, turn_off=None) -> dict:
     """받아쓴 문장 하나를 처리한다 (docs/architecture.md "다음 설계" 1~3단계).
 
     순서: 기록 → (전체 지시 확인 대기 중이면 응/아니 규칙) → 규칙·Jev 판단 → 애매하면 서브 관리자
@@ -321,6 +371,8 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
     send = send or send_postback
     ctx = ctx or ListenerContext()
     ask_manager = ask_manager or manager_mod.ask
+    turn_off = turn_off or _spawn_voice_off
+    meaning = ""  # 서브 관리자의 해석 — 세션에 원문과 함께 참고용으로 보낸다
 
     record.log_event("heard", text=text)  # 기록이 항상 먼저
 
@@ -337,10 +389,19 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
             text_to_send = pending[0]
         elif _is_reply(text, NO_WORDS):
             mode, say = "instruct_all_cancelled", "보내지 않았습니다."
+    pending_off, ctx.pending_off = ctx.pending_off, None
+    if not mode and pending_off and time.monotonic() < pending_off:
+        if _is_reply(text, YES_WORDS + ("꺼", "끄")):
+            mode, say = "voice_off", "음성모드를 끕니다."
+        elif _is_reply(text, NO_WORDS):
+            mode, say = "voice_off_cancelled", "끄지 않았습니다."
     if mode:
         record.log_event("decision", text=text, mode=mode, target=[t.project_name for t in targets],
-                         source="rule", reason="전체 지시 확인 응답", say=say)
-        results = _deliver(table, targets, text_to_send, send) if targets else []
+                         source="rule", reason="확인 응답", say=say)
+        if mode == "voice_off":
+            turn_off()
+        results = _deliver(table, targets, text_to_send, send, voice={"text": text_to_send, "meaning": "",
+                                                                       "tried": []}) if targets else []
         return {"mode": mode, "beep_twice": not targets and not say,
                 "targets": [t.project_name for t in targets], "say": say,
                 "results": results, "decision": None}
@@ -349,6 +410,13 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
     if _is_wait(text):
         record.log_event("decision", text=text, mode="wait", target=[], source="rule", reason="대기")
         return {"mode": "wait", "beep_twice": True, "targets": [], "say": "",
+                "results": [], "decision": None}
+
+    if _is_voice_off(text):
+        ctx.pending_off = time.monotonic() + CONFIRM_TIMEOUT_S
+        say = "음성모드를 끌까요? 끄려면 응이라고 말해 주세요."
+        record.log_event("decision", text=text, mode="confirm_off", target=[], source="rule", reason="음성모드 끄기", say=say)
+        return {"mode": "confirm_off", "beep_twice": False, "targets": [], "say": say,
                 "results": [], "decision": None}
 
     try:
@@ -377,6 +445,7 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
             "recent": record.tail_events(20),
         })
         if isinstance(ans, dict):
+            meaning = ans.get("meaning") if isinstance(ans.get("meaning"), str) else ""
             md, ask_back = _manager_decision(ans, sessions, judge_mod)
             if md is not None:
                 d, ok_cmd, ok_target = md, True, md.target_conf >= threshold
@@ -453,7 +522,8 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
     if pause_after is not None:
         for st in targets:
             table.set_paused(st.session_id, pause_after)
-    results = _deliver(table, targets, text, send) if targets else []
+    voice = {"text": text, "meaning": meaning, "tried": []} if mode in ("instruct", "fallback") else None
+    results = _deliver(table, targets, text, send, voice=voice) if targets else []
 
     return {
         "mode": mode,
@@ -463,6 +533,46 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
         "results": results,
         "decision": d,
     }
+
+
+def reroute(table: SessionTable, rejected: SessionState, reason: str, send=None, ask_manager=None) -> dict:
+    """세션이 "잘못 온 말"이라고 답했을 때: 서브 관리자에게 다른 세션을 다시 고르게 한다.
+
+    반환: {"mode": "rerouted"|"reroute_gave_up"|"ask_back"|"ignored", "targets", "say"}. say는 리스너가 읽는다.
+    """
+    from voice import judge as judge_mod
+    from voice import manager as manager_mod
+
+    send = send or send_postback
+    ask_manager = ask_manager or manager_mod.ask
+    lv, rejected.last_voice = rejected.last_voice, None
+    if not lv or time.time() - lv.get("at", 0) > REROUTE_WINDOW_S:
+        return {"mode": "ignored", "targets": [], "say": ""}
+    tried = list(lv.get("tried", [])) + [rejected.project_name]
+    record.log_event("misroute", project_name=rejected.project_name, text=lv["text"], reason=reason)
+    candidates = [s for s in table.all_sessions() if s.project_name not in tried]
+    if len(tried) > REROUTE_MAX or not candidates:
+        say = f"{rejected.project_name}에서 자기 일이 아니라고 해서 보내지 않았습니다. 프로젝트 이름을 넣어 다시 말해 주세요."
+        record.log_event("decision", text=lv["text"], mode="reroute_gave_up", target=[], source="rule", say=say)
+        return {"mode": "reroute_gave_up", "targets": [], "say": say}
+    ans = ask_manager({
+        "type": "reroute", "text": lv["text"], "meaning": lv.get("meaning", ""),
+        "rejected_by": tried, "reason": reason, "commands": judge_mod.COMMAND_HELP,
+        "sessions": [{"project": s.project_name, "paused": s.paused, "summary": s.last_summary} for s in candidates],
+        "recent": record.tail_events(20),
+    })
+    md, ask_back = _manager_decision(ans, candidates, judge_mod) if isinstance(ans, dict) else (None, "")
+    st = table.get(md.target) if md is not None and md.command == "instruct" else None
+    if st is None or st.project_name in tried:
+        say = ask_back or f"{rejected.project_name}에서 자기 일이 아니라고 해서 보내지 않았습니다. 프로젝트 이름을 넣어 다시 말해 주세요."
+        mode = "ask_back" if ask_back else "reroute_gave_up"
+        record.log_event("decision", text=lv["text"], mode=mode, target=[], source="manager", say=say)
+        return {"mode": mode, "targets": [], "say": say}
+    meaning = ans.get("meaning") if isinstance(ans.get("meaning"), str) and ans.get("meaning") else lv.get("meaning", "")
+    say = f"{st.project_name}로 다시 보냈습니다."
+    record.log_event("decision", text=lv["text"], mode="rerouted", target=[st.project_name], source="manager", say=say)
+    _deliver(table, [st], lv["text"], send, voice={"text": lv["text"], "meaning": meaning, "tried": tried})
+    return {"mode": "rerouted", "targets": [st.project_name], "say": say}
 
 
 # ---------------------------------------------------------------------------
@@ -763,11 +873,13 @@ class InboxWatcher:
     """inbox 폴더를 주기적으로 읽어 알림을 처리한다. shutdown 이벤트를 받으면 process_once가 True."""
 
     def __init__(self, table: SessionTable, tts_queue: "TtsQueue", started_at: Optional[float] = None,
-                 classify=None):
+                 classify=None, reroute_fn=None):
         self.table = table
         self.tts_queue = tts_queue
         self.started_at = time.time() if started_at is None else started_at
         self._classify = classify  # 테스트 주입용. None이면 voice.judge.classify_notice
+        # 테스트 주입용. None이면 별도 스레드에서 reroute()(서브 관리자 답을 최대 20초 기다리므로 inbox를 막지 않게)
+        self._reroute = reroute_fn
         self._last_beat = 0.0
 
     def beat(self) -> None:
@@ -820,6 +932,10 @@ class InboxWatcher:
                                       msg.get("token", ""), summary=text, at=ts if stale else None)
         if stale:
             return False
+        st = self.table.get(session_id)
+        if MISROUTE_MARK in text and st is not None and st.last_voice:
+            self._start_reroute(st, text.replace(MISROUTE_MARK, "").strip())
+            return False  # "잘못 온 말" 답은 읽지 않는다 — 대신 다시 보낸 결과를 읽는다
         # 4단계: Jev 종류 판단은 처음 1주 기록만 (읽기 기준은 아직 훅 종류)
         from voice import judge as judge_mod
         judged = (self._classify or judge_mod.classify_notice)(text)
@@ -828,6 +944,21 @@ class InboxWatcher:
         if should_speak_notice(self.tts_queue.ctx, kind):
             self.tts_queue.enqueue(project_name, text)
         return False
+
+    def _start_reroute(self, st: SessionState, reason: str) -> None:
+        if self._reroute is not None:
+            self._reroute(st, reason)
+            return
+
+        def run():
+            try:
+                result = reroute(self.table, st, reason)
+                if result["say"]:
+                    self.tts_queue.say(result["say"])
+            except Exception as e:  # noqa: BLE001
+                print(f"[reroute] 실패: {e}", file=sys.stderr)
+
+        threading.Thread(target=run, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
