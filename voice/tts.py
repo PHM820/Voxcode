@@ -19,7 +19,7 @@ from voice.languages import DEFAULT_LANGUAGE_CODE, SUPERTONIC_DIR_NAME, find_lan
 
 MODELS_ROOT = Path("models/tts")
 SUPERTONIC_STEPS = 8  # 품질↔속도: 5면 한 문장 약 1초, 12면 약 2~3초(2026-11-20 이 PC 실측)
-SUPERTONIC_SPEED = 1.1
+SUPERTONIC_SPEED = 1.2  # 사용자 지정(2026-11-20): M1을 1.2배로
 
 
 def supertonic_dir(models_root: Path = MODELS_ROOT) -> Path | None:
