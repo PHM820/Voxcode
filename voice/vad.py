@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """VAD(발화 감지) 래퍼 (Silero VAD).
 
-local-wake(`lwake`) 패키지가 `silero-vad`를 의존성으로 이미 설치해두므로
-별도 설치가 필요 없다 (CLAUDE_MAP.md, requirements.txt의 local-wake 참고).
+requirements.txt의 `silero-vad`(2026-11-20까지는 local-wake가 함께 설치해 줬다).
 
-호출어 감지 후 받아쓰기 종료 시점을 판단한다 — 침묵이 일정 시간 이상 지속되면
+호출어 말소리 구간 자르기(voice/wakeword.py)와 받아쓰기 종료 시점을 판단한다 — 침묵이 일정 시간 이상 지속되면
 발화가 끝났다고 본다(SpeechEndDetector). 내부적으로 Silero VAD의 `VADIterator`(청크 단위 스트리밍 API)를 쓴다.
 마이크에서 오는 실시간 청크를 한 번에 하나씩 넣는 구조라 listener.py의
 마이크 루프와 자연스럽게 맞물린다.

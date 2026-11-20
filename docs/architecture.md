@@ -471,7 +471,7 @@ Stop 훅을 발동시켜 `last_notify_at`을 갱신함 → 위 "세션 라우팅
 | 키 | 의미 | 기본값 |
 |---|---|---|
 | `enabled` | 음성모드 전역 on/off. `/voice-on`·`/voice-off`가 토글 | `false` (2026-09-27 정정 — 설치 직후 기본값이 `true`면 `/voice-on`을 켠 적 없어도 이미 켜진 것과 같아 스킬의 존재 의미가 없어짐) |
-| `wake_word` | 호출어 (local-wake 온보딩 대상) | `"자비스"` |
+| `wake_word` | 호출어 (받아쓴 글자로 확인, `voice/wakeword.py`) | `"자비스"` |
 | `language` | whisper STT 언어 코드 — 항상 명시 필요(known-issues.md 6번) | `"ko"` |
 | `play_official_bell` | 완료 시 공식 터미널 벨을 음성 요약과 병행 재생할지 | `true` |
 | `project_alias` | TTS로 읽을 프로젝트명. `null`이면 `cwd` 폴더명 그대로 사용 | `null` |

@@ -5,6 +5,6 @@
 
 onnxruntime>=1.20.0  # TTS(Supertonic 3) 추론
 pywhispercpp>=1.5.0
-local-wake>=0.1.0
+silero-vad>=5.1  # 말소리 구간 감지(VAD). 호출어도 받아쓰기로 확인하므로 별도 호출어 엔진은 없음
 sounddevice>=0.5.0
 numpy>=2.0.0

@@ -209,4 +209,59 @@ for gone in ("mark_detached", "mark_attached", "find_by_project_prefix"):
 for gone in ("parse_stop_command", "STOP_PREFIX", "should_drop_transcript"):
     assert not hasattr(listener, gone), gone
 
+# --- 14. 호출어: 받아쓴 글자로 확인 (마이크·모델 없이 VAD와 받아쓰기를 바꿔 끼움) ---
+import numpy as np  # noqa: E402
+from voice import wakeword  # noqa: E402
+
+for t in ("자비스", "자비스.", "자비스야!", " 자 비 스 ", "Jarvis?", "자비수", "쟈비스"):
+    assert wakeword.is_wake_text(t), t
+for t in ("안녕하세요", "서비스", "사비스", "타비스", "자비로운 사람", "", "(음악)"):
+    assert not wakeword.is_wake_text(t), t
+assert wakeword.is_wake_text("헤이 보이스", "보이스") and not wakeword.is_wake_text("자비스", "보이스"), "다른 호출어 설정 무시"
+
+
+class FakeVad:
+    """청크 값이 1이면 말소리, 0이면 침묵. 침묵 2청크면 끝."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.has_speech_started, self.is_finished, self._quiet = False, False, 0
+
+    def push(self, chunk):
+        if chunk[0] > 0:
+            self.has_speech_started, self._quiet = True, 0
+        elif self.has_speech_started:
+            self._quiet += 1
+            self.is_finished = self._quiet >= 2
+
+
+heard = []
+
+
+def fake_stt(audio):
+    heard.append(len(audio))
+    return {1: "자비스.", 2: "안녕하세요"}.get(int(audio.max() * 10) // 10 or 1, "")
+
+
+CH = 512
+rejects = []
+sp = wakeword.WakeSpotter(fake_stt, FakeVad, chunk_samples=CH, sample_rate=16000, wake_word="자비스",
+                          on_reject=rejects.append)
+on, off = np.ones(CH, np.float32), np.zeros(CH, np.float32)
+
+
+def feed(chunks):
+    return [r for r in (sp.push(c) for c in chunks) if r is not None]
+
+
+assert feed([off] * 20 + [on] * 10 + [off] * 3) == ["자비스."], "짧은 말 속 호출어를 못 찾음"
+assert heard[-1] == (sp._preroll.maxlen + 10 + 2) * CH, f"말 앞 소리(preroll)·뒤 침묵이 안 붙음: {heard[-1]}"
+n = len(heard)
+assert feed([on * 2] * 10 + [off] * 3) == [] and rejects == ["안녕하세요"], "호출어 아닌 말을 받아들임"
+long_chunks = int(wakeword.WAKE_MAX_S * 16000 / CH) + 5
+assert feed([on] * long_chunks + [off] * 3) == [] and len(heard) == n + 1, "긴 말을 받아썼음(호출어 아님·CPU 낭비)"
+assert feed([off] * 30) == [], "침묵에 반응"
+assert feed([on] * 8 + [off] * 3) == ["자비스."], "긴 말 다음 호출어를 못 찾음(상태가 안 풀림)"
+
 print("routing checks OK")

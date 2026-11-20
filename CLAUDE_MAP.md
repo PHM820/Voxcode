@@ -16,10 +16,10 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
   - `.claude/worktrees/` 아래(/delegate 작업자) 세션, 서브 관리자 폴더, 전역 `enabled: false`(`~/.voxcode/config.json`)면 아무것도 남기지 않는다.
 
 ## 음성 명령 (호출어 → 받아쓰기 → 라우팅 → 주입)
-- 개요: 리스너 안의 `MicLoop` 스레드가 마이크를 계속 열고, "자비스"를 감지하면 비프 → 녹음(VAD로 끝 감지) → whisper 받아쓰기 → `~/.voxcode/log.jsonl`에 먼저 기록 → 판단(규칙·Jev)으로 명령과 대상 결정 → `voice/inject.js`로 그 세션에 사용자 메시지로 넣는다.
-- 시작점: `voice/listener.py`(`MicLoop`, `_dictation_cycle`, `route_and_send`, `route_command`, `SessionTable`), `voice/judge.py`(`judge`, `Decision`), `voice/record.py`(`log_event`, `write_state`), `voice/wakeword.py`, `voice/vad.py`, `voice/stt.py`, `voice/inject.js`.
+- 개요: 리스너 안의 `MicLoop` 스레드가 마이크를 계속 열고, 짧은 말을 받아써 "자비스"면 비프 → 녹음(VAD로 끝 감지) → whisper 받아쓰기 → `~/.voxcode/log.jsonl`에 먼저 기록 → 판단(규칙·Jev)으로 명령과 대상 결정 → `voice/inject.js`로 그 세션에 사용자 메시지로 넣는다.
+- 시작점: `voice/listener.py`(`MicLoop`, `_dictation_cycle`, `route_and_send`, `route_command`, `SessionTable`), `voice/judge.py`(`judge`, `Decision`), `voice/record.py`(`log_event`, `write_state`), `voice/wakeword.py`(`WakeSpotter`, `is_wake_text`, `WAKE_FORMS`), `voice/vad.py`, `voice/stt.py`, `voice/inject.js`.
 - 함정:
-  - `lwake.listen()`은 콜백에서 난 `Exception`을 삼킨다 — 호출어 감지 탈출용 예외는 `BaseException`을 상속해야 한다(known-issues 17).
+  - 호출어는 소리 비교(local-wake)가 아니라 **받아쓴 글자**로 확인한다 — 소리 비교는 "자비스"와 조용할 때·"안녕하세요"를 구별 못 했다(실측). 2.5초 이하 말만 whisper small + `audio_ctx=256`으로 받아쓴다(0.6초). `WAKE_FORMS`에 "사비스·서비스"를 넣지 말 것(흔한 말에 반응). 받아쓰기(`_dictation_cycle`)는 `audio_ctx` 768 — 길이에 딱 맞추면 글자가 깨진다. 호출어가 아닌 짧은 말은 `log.jsonl`에 `wake_reject`로 남는다.
   - 비프가 0.3초보다 짧으면 이 PC 오디오 드라이버에서 안 들린다.
   - 판단은 Jev 호출 한 번(명령 + 대상). 확신도 0.8 미만·키 없음·오류면 규칙 폴백: 세션 1개면 그 세션 → 멈추지 않은 세션 중 최근 완료 알림 → 최근 명령. Jev에는 프로젝트명·요약만 보내고 세션 key(소켓 경로)·토큰은 `s1, s2…`로 숨긴다.
   - "멈춰"는 강제 중단이 아니라 그 세션에 문장을 그대로 전달 + `paused` 표시. 대상이 애매하면(Jev 실패 시 멈춤 단어 포함) 아무것도 안 보내고 삑 두 번. **완료 알림(notify)은 `paused`를 풀지 않는다** — 풀리는 건 다시 시작·그 세션을 직접 지시할 때뿐.
@@ -27,7 +27,6 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
   - 목록·다시 말해줘·조용히·상황 묻기는 `_listener_reply`가 세션에 안 보내고 읽어 준다. 조용히 모드는 `ListenerContext.quiet` → `should_speak_notice`(지금은 훅 종류 기준).
   - 서브 관리자(`voice/manager.py`, `ask`·`launch`·`stop`)는 Jev가 애매할 때만 부른다. 주고받기는 `~/.voxcode/manager/questions·answers/` 파일 — 관리자에 주입하는 건 id 한 줄뿐. 관리자 폴더의 훅은 프로젝트로 알리지 않고 `session.json`만 등록한다(`hooks/_common.py`). 테스트는 `ask_manager`를 바꿔 끼운다.
   - 기록이 먼저: `heard`를 쓰고 나서 전달한다. `record`는 예외를 밖으로 내지 않는다(마이크 스레드 보호). 테스트는 `VOXCODE_HOME`으로 폴더를 바꾼다.
-  - 호출어 온보딩(`models/wakeword/<호출어>/*.wav`)이 없으면 마이크 루프는 로그만 남기고 끝난다(음성 요약은 계속 동작). 녹음 파일은 git에 없으니 새로 받은 사람은 `python -m voice.wakeword onboard`를 본인 터미널에서 한 번 실행해야 한다(사람이 신호에 맞춰 말해야 하므로 Claude가 대신 실행하지 않음).
 
 ## TTS·STT 엔진과 언어
 - 시작점: `voice/tts.py`(`TtsEngine`), `voice/stt.py`(`SttEngine`), `voice/languages.py`(`LANGUAGES`, `VoiceOption`), `.claude/download_tts_model.py`.

@@ -9,7 +9,7 @@ setlocal enabledelayedexpansion
 set VENV_DIR=.venv
 set MODELS_DIR=models
 set STT_MODEL_DIR=%MODELS_DIR%\stt
-set STT_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+set STT_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
 REM TTS 모델(Supertonic 3)은 모든 언어·목소리가 한 벌을 같이 쓴다 - 언어는 /voice-on 최초
 REM 실행 때 고르지만 받을 모델은 같으므로 여기서 미리 받는다 (voice/languages.py 참고).
 
@@ -56,13 +56,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo === 4/4: STT model (whisper.cpp base, ~147MB) ===
-if exist "%STT_MODEL_DIR%\ggml-base.bin" (
-    echo Already downloaded: %STT_MODEL_DIR%\ggml-base.bin
+echo === 4/4: STT model (whisper.cpp small, ~488MB - also used to hear the wake word) ===
+if exist "%STT_MODEL_DIR%\ggml-small.bin" (
+    echo Already downloaded: %STT_MODEL_DIR%\ggml-small.bin
 ) else (
     if not exist "%STT_MODEL_DIR%" mkdir "%STT_MODEL_DIR%"
     echo Downloading %STT_MODEL_URL%
-    "%VENV_PY%" -c "import urllib.request; urllib.request.urlretrieve('%STT_MODEL_URL%', 'models/stt/ggml-base.bin')"
+    "%VENV_PY%" -c "import urllib.request; urllib.request.urlretrieve('%STT_MODEL_URL%', 'models/stt/ggml-small.bin')"
     if errorlevel 1 (
         echo SETUP FAILED: STT model download failed. Check your internet connection
         echo and retry, or download manually from:
@@ -78,6 +78,5 @@ REM Undo: "%VENV_PY%" -m voice.control uninstall-skills
 echo.
 echo SETUP OK
 echo Next: run .claude\verify.cmd to confirm everything imports correctly.
-echo Then run /voice-on in Claude Code. For voice commands, record the wake word once:
-echo   .venv\Scripts\python.exe -m voice.wakeword onboard
+echo Then run /voice-on in Claude Code and say the wake word "Jarvis" to give a voice command.
 exit /b 0

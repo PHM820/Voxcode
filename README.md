@@ -43,7 +43,7 @@ Voxcode는 그것을 다시 만들지 않고, 훅(hook)으로 위에 얹어 두 
 setup.cmd
 ```
 
-가상환경(`.venv`), 패키지, 받아쓰기 모델(약 147MB), 음성 모델 Supertonic 3(약 383MB, 모든 언어 공통)을 받습니다.
+가상환경(`.venv`), 패키지, 받아쓰기 모델 whisper small(약 488MB, 호출어 확인에도 씀), 음성 모델 Supertonic 3(약 383MB, 모든 언어 공통)을 받습니다.
 SSL 인증서 오류(`CERTIFICATE_VERIFY_FAILED`)가 나면 백신의 SSL 검사 때문일 가능성이 높습니다 → [known-issues 1번](docs/known-issues.md#1-pip-ssl-인증서-검증-실패-백신-ssl-검사-소프트웨어-사용자-전원-영향-가능).
 
 **2. 설치 확인**
@@ -54,16 +54,7 @@ SSL 인증서 오류(`CERTIFICATE_VERIFY_FAILED`)가 나면 백신의 SSL 검사
 
 `ALL CHECKS PASSED`가 나오면 됩니다.
 
-**3. 호출어 녹음** (음성 명령을 쓸 때만) — 같은 폴더의 터미널에서:
-
-```
-.venv\Scripts\python.exe -m voice.wakeword onboard
-```
-
-안내가 나올 때마다 Enter를 누르고 "자비스"라고 말합니다(2초씩 4번). 다른 호출어를 쓰려면 명령 끝에 붙이세요.
-녹음하지 않아도 완료 음성 요약은 동작합니다.
-
-**4. (선택) Jev 키 넣기** — 아래 [명령 판단 (Jev)](#명령-판단-jev) 참고.
+**3. (선택) Jev 키 넣기** — 아래 [명령 판단 (Jev)](#명령-판단-jev) 참고.
 
 ---
 

@@ -17,8 +17,10 @@ from pathlib import Path
 
 import numpy as np
 
-# 모델 경로: setup.cmd가 이미 이 경로에 다운로드해둔다 (docs/decisions.md 참고).
-DEFAULT_MODEL_PATH = "models/stt/ggml-base.bin"
+# 모델 경로: setup.cmd가 받아 둔다. small이 기본(2026-11-20: 호출어 "자비스" 실측 base 6/8 → small 8/8),
+# 예전 설치처럼 base만 있으면 base를 쓴다.
+DEFAULT_MODEL_PATH = "models/stt/ggml-small.bin"
+FALLBACK_MODEL_PATH = "models/stt/ggml-base.bin"
 
 WHISPER_SAMPLE_RATE = 16000  # known-issues.md 5번: whisper.cpp 고정 요구사항
 
@@ -50,6 +52,9 @@ class SttEngine:
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH):
         from pywhispercpp.model import Model  # 지연 임포트: 무거운 네이티브 확장
 
+        if model_path == DEFAULT_MODEL_PATH and not Path(model_path).exists():
+            model_path = FALLBACK_MODEL_PATH
+
         if not Path(model_path).exists():
             raise FileNotFoundError(
                 f"STT 모델을 찾을 수 없습니다: {model_path} "
@@ -59,18 +64,30 @@ class SttEngine:
         self._model = Model(model_path)
 
     def transcribe(self, audio_samples: np.ndarray, sample_rate: int,
-                   language: str = "ko") -> str:
+                   language: str = "ko", audio_ctx: int | None = None,
+                   initial_prompt: str | None = None) -> str:
         """오디오 샘플(1D float32, [-1, 1])을 텍스트로 변환한다.
 
         :param audio_samples: 마이크 등에서 얻은 1D float32 PCM 샘플
         :param sample_rate: audio_samples의 실제 샘플레이트 (16000이 아니면 리샘플링)
         :param language: whisper 언어 코드. known-issues.md 6번 — 항상 명시 필요,
             생략(자동 감지)하면 조용히 엉뚱한 언어로 오인식할 수 있다.
+        :param audio_ctx: 인코더가 볼 범위(프레임). 생략하면 15초 이하는 768 — whisper는 늘 30초로
+            채워 처리해서, 짧은 소리도 30초만큼 걸린다(small 1초 소리 4.7초 → 256이면 0.6초, 실측).
+            256은 호출어처럼 2.5초 이하 소리에만 쓴다.
+        :param initial_prompt: 받아쓰기 힌트(예: 호출어).
         """
         audio = np.asarray(audio_samples, dtype=np.float32).reshape(-1)
         audio = resample_to_16k(audio, sample_rate)
 
-        segments = self._model.transcribe(audio, language=language)
+        if audio_ctx is None:
+            # 길이에 딱 맞추면(6.9초 → 409) 글자가 깨졌다. 768(15.4초 분량)은 1500과 같은 결과에
+            # 절반 시간(실측) — 받아쓰기 최대 15초(DICTATION_MAX_S)가 다 들어간다.
+            audio_ctx = 768 if len(audio) <= 15 * WHISPER_SAMPLE_RATE else 1500
+        opts = {"language": language, "audio_ctx": audio_ctx}
+        if initial_prompt:
+            opts["initial_prompt"] = initial_prompt
+        segments = self._model.transcribe(audio, **opts)
         return "".join(seg.text for seg in segments).strip()
 
 

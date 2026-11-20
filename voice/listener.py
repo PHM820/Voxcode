@@ -12,8 +12,8 @@ docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(�
      voice/judge.py)으로 명령(지시·멈춰·전체 멈춰·다시 시작·취소·잡음)과 대상 결정
      → 확신이 낮으면 규칙 폴백("방금 알림 온 세션") → 대상 세션에 전달
   5. 전달은 voice/inject.js를 subprocess로 호출해 postback
-  6. 실시간 마이크 루프(MicLoop): 항상 마이크를 열어 VAD+wakeword로 호출어
-     대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send
+  6. 실시간 마이크 루프(MicLoop): 항상 마이크를 열어 짧은 말을 받아써 "자비스"인지 확인(voice/wakeword.py)
+     하며 호출어 대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send
      (architecture.md "다음 설계" 절)
 
 MicLoop은 별도 스레드(daemon)에서 돌고, 메인 스레드는 inbox를 지켜본다.
@@ -561,12 +561,17 @@ MIC_SAMPLE_RATE = 16000  # voice/vad.py, voice/stt.py 모두 16kHz 기준
 DICTATION_MAX_S = 15.0  # 받아쓰기 최대 길이 안전장치 (무한정 녹음 방지)
 
 
+def _stt_language() -> str:
+    from voice.config import load_settings
+    return load_settings().get("language", "ko")
+
+
 class MicLoop:
     """상시 마이크 루프: 호출어 대기 → 받아쓰기 → 라우팅. TTS 재생 중 호출어가 들리면 재생을 끊는다.
 
     별도 스레드(daemon)에서 run()을 실행해 inbox 감시와 동시에 돈다
-    (작업 지시서 4번). 무거운 모델(SttEngine, WakeWordDetector)은 스레드
-    시작 시 1회만 로딩한다.
+    (작업 지시서 4번). 무거운 모델(SttEngine)은 스레드 시작 시 1회만 로딩한다.
+    호출어도 같은 STT로 확인한다(WakeSpotter).
     """
 
     def __init__(self, table: SessionTable, tts_queue: TtsQueue,
@@ -597,8 +602,21 @@ class MicLoop:
             self._stt_engine = SttEngine()
             print("[mic-loop] STT 모델 로딩 완료")
         if self._wake_detector is None:
-            from voice.wakeword import WakeWordDetector
-            self._wake_detector = WakeWordDetector()
+            from voice.vad import CHUNK_SAMPLES, SpeechEndDetector
+            from voice.wakeword import WAKE_SILENCE_S, WakeSpotter, get_configured_wake_word
+            wake_word = get_configured_wake_word()
+            lang = _stt_language()
+
+            def _transcribe(audio):
+                # audio_ctx=256: 짧은 소리용으로 처리 범위를 줄여 4.7초 → 0.6초(실측). 호출어를 힌트로 준다.
+                return self._stt_engine.transcribe(audio, self.sample_rate, language=lang,
+                                                   audio_ctx=256, initial_prompt=wake_word)
+
+            self._wake_detector = WakeSpotter(
+                _transcribe, lambda: SpeechEndDetector(silence_duration_s=WAKE_SILENCE_S,
+                                                       sample_rate=self.sample_rate),
+                chunk_samples=CHUNK_SAMPLES, sample_rate=self.sample_rate, wake_word=wake_word,
+                on_reject=lambda text: record.log_event("wake_reject", text=text))
 
     def _run_safe(self) -> None:
         try:
@@ -611,15 +629,6 @@ class MicLoop:
         """상시 루프: sounddevice 입력 스트림 하나를 열어 계속 청크를 읽는다."""
         import sounddevice as sd
         from voice.vad import CHUNK_SAMPLES
-
-        if not self._wake_detector.is_onboarded():
-            print(
-                f"[mic-loop] 호출어 '{self._wake_detector.wake_word}' 온보딩이 안 돼 "
-                f"있어 마이크 루프를 시작하지 않습니다. 프로젝트 루트에서 "
-                f"'.venv\\Scripts\\python.exe -m voice.wakeword onboard'를 먼저 실행하세요.",
-                file=sys.stderr,
-            )
-            return
 
         print("[mic-loop] 마이크 루프 시작 (호출어 대기)")
         with sd.InputStream(samplerate=self.sample_rate, channels=1,
@@ -643,47 +652,18 @@ class MicLoop:
 
     def _wait_for_wakeword(self, stream) -> None:
         """호출어가 감지될 때까지 블록. 감지되거나 stop()이 호출되면 반환."""
+        from voice.vad import CHUNK_SAMPLES
 
-        # 2026-09-27 실측으로 발견한 버그: lwake.listen()의 감지 루프는
-        # callback() 호출을 통째로 try/except Exception으로 감싸고 있어서
-        # (.venv/Lib/site-packages/lwake/listen.py), 콜백이 Exception 계열
-        # 예외를 던지면 "DTW comparison failed"로 로그만 찍히고 조용히
-        # 삼켜진다 — 호출어가 반복 감지돼도 _dictation_cycle로 못 넘어가고
-        # while True가 무한히 도는 실제 재현된 무한 루프의 원인이었다.
-        # BaseException을 직접 상속(Exception 미상속)하면 그 except 절을
-        # 그대로 통과해 밖으로 빠져나온다 — KeyboardInterrupt/SystemExit와
-        # 같은 방식.
-        class _WakeDetected(BaseException):
-            pass
-
-        def _on_detect(detection: dict) -> None:
-            # 임계값 조정용 기록 — 오탐이 나면 이 거리와 직후 heard를 보고 판단한다.
-            record.log_event("wake", distance=round(float(detection.get("distance", -1)), 4))
-            raise _WakeDetected()
-
-        # lwake.listen()은 자체 while True 루프라, self._stop을 주기적으로
-        # 확인할 수 없다. 대신 짧은 슬라이스로 나눠 반복 호출해 stop() 반응성을 확보한다.
-        # (listen()이 stream.read()를 계속 호출하므로, 완전한 인터럽트는 불가능하지만
-        # 예외로 빠져나오는 구조 자체는 정상 동작한다 — 마이크 실시간 검증은 별도 확인 필요)
         while not self._stop.is_set():
+            chunk, _overflow = stream.read(CHUNK_SAMPLES)
             try:
-                self._wake_detector.listen_blocking(_on_detect, stream=stream)
-                # known-issues.md 14번: lwake.listen()은 참조 파일이 전부 로딩
-                # 실패(손상 등)하면 예외 없이 조용히 return한다 — 여기서 잡지
-                # 않으면 이 while 루프가 "감지 안 됨"을 CPU만 계속 태우며 무한
-                # 반복하고, 사용자는 원인을 알 길이 없다. 예외 없는 리턴도
-                # 이상 상황으로 보고 로그를 남긴 뒤 짧게 쉬고 재시도한다.
-                print(
-                    "[mic-loop] wakeword listen이 감지 없이 조용히 끝남 "
-                    "(참조 파일이 손상됐을 수 있음 — models/wakeword/ 확인 권장), 재시도",
-                    file=sys.stderr,
-                )
-                time.sleep(0.5)
-            except _WakeDetected:
+                text = self._wake_detector.push(chunk[:, 0].copy())
+            except Exception as e:  # noqa: BLE001 - 한 번 실패로 마이크 루프가 죽지 않게
+                print(f"[mic-loop] 호출어 확인 오류, 계속: {e}", file=sys.stderr)
+                continue
+            if text is not None:
+                record.log_event("wake", text=text)
                 return
-            except Exception as e:  # noqa: BLE001
-                print(f"[mic-loop] wakeword listen 오류, 재시도: {e}", file=sys.stderr)
-                time.sleep(0.5)
 
     def _dictation_cycle(self, stream, play_entry_beep: bool) -> None:
         """받아쓰기 모드 한 사이클: 진입 비프 -> 녹음(VAD 종료 감지) -> 완료 비프 -> STT -> 라우팅."""
@@ -716,9 +696,7 @@ class MicLoop:
             return
 
         print("[mic-loop] STT 인식 중...")
-        from voice.config import load_settings
-        stt_language = load_settings().get("language", "ko")
-        text = self._stt_engine.transcribe(audio, self.sample_rate, language=stt_language)
+        text = self._stt_engine.transcribe(audio, self.sample_rate, language=_stt_language())
         print(f"[mic-loop] 인식 결과: {text!r}")
         self.last_transcript = text
 
