@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 
 _lock = threading.Lock()
+_last_sessions: list = []
+_extra: dict = {}  # 세션 밖 상황(조용히 모드 등) — write_state가 함께 쓴다
 
 
 def home() -> Path:
@@ -40,12 +42,22 @@ def log_event(kind: str, **fields) -> None:
         print(f"[record] log 기록 실패: {e}", file=sys.stderr)
 
 
-def write_state(sessions) -> None:
+def set_state_field(name: str, value) -> None:
+    """세션 밖 상황 값을 바꾸고 state.json을 다시 쓴다."""
+    _extra[name] = value
+    write_state()
+
+
+def write_state(sessions=None) -> None:
+    global _last_sessions
     try:
+        if sessions is not None:
+            _last_sessions = list(sessions)
         data = {
             "updated": _now(),
             "listener_pid": os.getpid(),
-            "sessions": [asdict(s) if is_dataclass(s) else dict(s) for s in sessions],
+            **_extra,
+            "sessions": [asdict(s) if is_dataclass(s) else dict(s) for s in _last_sessions],
         }
         with _lock:
             target = home() / "state.json"

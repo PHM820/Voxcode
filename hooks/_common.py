@@ -36,7 +36,7 @@ def is_delegate_worker(cwd: str) -> bool:
     return "\\.claude\\worktrees\\" in cwd or "/.claude/worktrees/" in cwd
 
 
-def notify_listener(text: str, cwd: str) -> None:
+def notify_listener(text: str, cwd: str, kind: str = "stop") -> None:
     """리스너에 완료·알림 텍스트를 보낸다. 응답은 기다리지 않는다.
 
     session_id는 별도로 만들지 않고 이 세션의 메시징 소켓 경로를 그대로 쓴다.
@@ -44,6 +44,7 @@ def notify_listener(text: str, cwd: str) -> None:
     socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
     message = {
         "event": "notify",
+        "kind": kind,
         "session_id": socket_path,
         "project_name": Path(cwd).name,
         "text": text,

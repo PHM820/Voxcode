@@ -39,7 +39,9 @@ class Sender:
 def two_sessions():
     t = SessionTable()
     t.upsert_from_notify("k-a", "proj-a", "k-a", "tok1", summary="a 요약")
-    t.upsert_from_notify("k-b", "proj-b", "k-b", "tok2", summary="b 요약")  # proj-b가 최근
+    t.upsert_from_notify("k-b", "proj-b", "k-b", "tok2", summary="b 요약")
+    # Windows time.time()은 해상도가 거칠어 두 알림이 같은 시각이 될 수 있다 — 순서를 명시
+    t.get("k-b").last_notify_at = t.get("k-a").last_notify_at + 1  # proj-b가 최근
     return t
 
 
@@ -158,6 +160,7 @@ class FakeWriter:
 class FakeTts:
     def __init__(self):
         self.items = []
+        self.ctx = listener.ListenerContext()
 
     def enqueue(self, project, summary):
         self.items.append((project, summary))
@@ -182,6 +185,33 @@ assert t.get("k-n").paused, "TCP 완료 알림이 멈춘 세션을 살림"
 assert call_server(server, {**note, "event": "detach"})["ok"] is False, "detach 이벤트가 남아 있음"
 logged = [json.loads(l) for l in LOG.read_text(encoding="utf-8").splitlines()]
 assert any(e["kind"] == "notify" and e["summary"] == "테스트 다 통과" for e in logged)
+tts.ctx.quiet = True
+tts.items.clear()
+call_server(server, note)
+assert tts.items == [], "조용히 모드에서 완료 요약을 읽음"
+call_server(server, {**note, "kind": "notification", "text": "권한 필요"})
+assert tts.items == [("proj-n", "권한 필요")], "조용히 모드에서 질문·권한 알림을 안 읽음"
+
+# --- 11-2. 리스너가 직접 답하는 명령 (2단계): 세션에 안 보냄, 삑 없음, 읽을 문장 ---
+from voice.listener import ListenerContext  # noqa: E402
+
+t, s, ctx = two_sessions(), Sender(), ListenerContext()
+t.set_paused("k-a", True)
+r = route_and_send(t, "뭐 열려 있어", judge_fn=fixed("list", "listener"), send=s, ctx=ctx)
+assert r["mode"] == "list" and not s.calls and not r["beep_twice"], r
+assert "proj-a 멈춤" in r["say"] and "proj-b" in r["say"], r["say"]
+ctx.last_said = "proj-b, 테스트 통과"
+r = route_and_send(t, "다시 말해줘", judge_fn=fixed("repeat", "listener"), send=s, ctx=ctx)
+assert r["say"] == "proj-b, 테스트 통과" and not s.calls
+r = route_and_send(t, "a 어떻게 됐어", judge_fn=fixed("status", "k-a"), send=s, ctx=ctx)
+assert "a 요약" in r["say"] and "b 요약" not in r["say"] and not s.calls, r["say"]
+r = route_and_send(t, "다들 어디까지 했어", judge_fn=fixed("status", "all"), send=s, ctx=ctx)
+assert "a 요약" in r["say"] and "b 요약" in r["say"], r["say"]
+r = route_and_send(t, "조용히 해", judge_fn=fixed("quiet", "listener"), send=s, ctx=ctx)
+assert ctx.quiet and json.loads((HOME / "state.json").read_text(encoding="utf-8"))["quiet"] is True
+assert not listener.should_speak_notice(ctx, "stop") and listener.should_speak_notice(ctx, "notification")
+route_and_send(t, "다 알려줘", judge_fn=fixed("verbose", "listener"), send=s, ctx=ctx)
+assert not ctx.quiet and listener.should_speak_notice(ctx, "stop") and not s.calls
 
 # --- 12. 옛 규칙이 남아 있지 않음 ---
 for gone in ("mark_detached", "mark_attached", "find_by_project_prefix"):

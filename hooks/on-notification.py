@@ -18,7 +18,7 @@ def main() -> int:
     text = payload.get("message") or payload.get("title") or ""
     cwd = payload.get("cwd") or os.getcwd()
     if text and not is_delegate_worker(cwd) and is_enabled():
-        notify_listener(text, cwd)
+        notify_listener(text, cwd, kind="notification")
     return 0
 
 

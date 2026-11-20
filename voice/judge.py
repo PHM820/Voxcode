@@ -30,7 +30,11 @@ ENV_FILE = Path(".env")
 # 판단을 그대로 실행할 확신도 기준선. 처음 0.8, 실사용 로그(log.jsonl)로 조정.
 CONFIDENCE_THRESHOLD = 0.8
 
-COMMANDS = ("instruct", "stop", "stop_all", "resume", "cancel", "noise")
+COMMANDS = (
+    "instruct", "stop", "stop_all", "resume", "cancel", "noise",
+    # 리스너가 직접 답하는 명령 (2단계)
+    "list", "repeat", "quiet", "verbose", "status",
+)
 TARGET_ALL = "all"
 TARGET_LISTENER = "listener"
 TARGET_UNKNOWN = "unknown"
@@ -49,6 +53,11 @@ _COMMAND_OPTIONS = {
         "음성인식이 무음·잡음에서 지어낸 문장이나 의미 없는 조각. 예: '시청해 주셔서 감사합니다.' "
         "사람이 한 짧은 대답(응, 고고, 1번, 고쳐)은 noise가 아니라 instruct"
     ),
+    "list": "음성 비서에게 열린 프로젝트 목록을 묻는 말. 예: '뭐 열려 있어?', '프로젝트 뭐 있어'",
+    "repeat": "음성 비서에게 방금 읽어 준 안내를 다시 읽으라는 말. 예: '방금 거 다시', '다시 말해줘'",
+    "quiet": "음성 비서에게 알림을 줄이라는 말. 예: '조용히 해', '중요한 것만 알려줘'",
+    "verbose": "음성 비서에게 알림을 다시 다 읽으라는 말. 예: '다 알려줘', '조용히 모드 꺼'",
+    "status": "프로젝트 진행 상황을 묻는 말. 예: '번개장터 어떻게 됐어?', '다들 어디까지 했어?'",
 }
 
 _TARGET_INSTRUCTIONS = (

@@ -122,6 +122,23 @@ class SessionTable:
             return list(self._sessions.values())
 
 
+@dataclass
+class ListenerContext:
+    """세션 밖 리스너 상황. TtsQueue·route_and_send·알림 처리가 함께 쓴다."""
+
+    quiet: bool = False   # 조용히 모드: 질문·권한 알림(kind=notification)만 읽고 완료 요약은 기록만
+    last_said: str = ""   # "다시 말해줘"용 — 마지막으로 읽기 시작한 문장
+
+    def set_quiet(self, quiet: bool) -> None:
+        self.quiet = quiet
+        record.set_state_field("quiet", quiet)
+
+
+def should_speak_notice(ctx: ListenerContext, kind: str) -> bool:
+    """조용히 모드에서는 질문·권한 알림만 읽는다 (Jev 종류 판단은 처음 1주 기록만 — 4단계)."""
+    return not ctx.quiet or kind == "notification"
+
+
 # ---------------------------------------------------------------------------
 # 규칙 폴백 (Jev가 판단 못 했을 때)
 # ---------------------------------------------------------------------------
@@ -194,16 +211,45 @@ def _deliver(table: SessionTable, targets: list[SessionState], text: str, send) 
     return results
 
 
-def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> dict:
+def _listener_reply(table: SessionTable, ctx: ListenerContext, command: str,
+                    target: Optional[SessionState]) -> str:
+    """리스너가 세션에 보내지 않고 직접 답하는 명령의 읽을 문장."""
+    sessions = table.all_sessions()
+    if command == "list":
+        if not sessions:
+            return "열린 프로젝트가 없습니다."
+        names = [s.project_name + (" 멈춤" if s.paused else "") for s in sessions]
+        return "열린 프로젝트는 " + ", ".join(names) + "입니다."
+    if command == "repeat":
+        return ctx.last_said or "다시 읽을 안내가 없습니다."
+    if command == "quiet":
+        ctx.set_quiet(True)
+        return "조용히 할게요. 질문만 읽어 드립니다."
+    if command == "verbose":
+        ctx.set_quiet(False)
+        return "이제 다 알려 드릴게요."
+    # status: 대상 하나면 그 세션, 아니면 전체 (기록 그대로 읽기)
+    picked = [target] if target else sessions
+    if not picked:
+        return "열린 프로젝트가 없습니다."
+    return " ".join(f"{s.project_name}: {s.last_summary or '아직 요약이 없습니다.'}" for s in picked)
+
+
+LISTENER_COMMANDS = ("list", "repeat", "quiet", "verbose", "status")
+
+
+def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None,
+                   ctx: Optional[ListenerContext] = None) -> dict:
     """받아쓴 문장 하나를 처리한다 (docs/architecture.md "다음 설계" 1단계).
 
     judge_fn·send는 테스트에서 네트워크·node 없이 바꿔 끼우는 용도.
-    반환: {"mode", "beep_twice", "targets"(보낸 프로젝트명), "results", "decision"}.
+    반환: {"mode", "beep_twice", "targets"(보낸 프로젝트명), "say"(읽을 문장), "results", "decision"}.
     """
     from voice import judge as judge_mod
 
     judge_fn = judge_fn or judge_mod.judge
     send = send or send_postback
+    ctx = ctx or ListenerContext()
 
     record.log_event("heard", text=text)  # 기록이 항상 먼저
 
@@ -229,7 +275,7 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> 
             return table.get(d.target)
         return None
 
-    mode, targets, reason = "", [], ""
+    mode, targets, reason, say = "", [], "", ""
     pause_after: Optional[bool] = None
 
     if not ok_cmd:
@@ -242,6 +288,9 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> 
             mode, targets = ("fallback", [fb]) if fb else ("no_target", [])
     elif d.command in ("noise", "cancel"):
         mode = "dropped"
+    elif d.command in LISTENER_COMMANDS:
+        mode = d.command
+        say = _listener_reply(table, ctx, d.command, table.get(d.target) if ok_target else None)
     elif d.command == "instruct":
         st = target_session() or route_command(table)
         mode, targets = ("instruct", [st]) if st else ("no_target", [])
@@ -265,7 +314,7 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> 
         "decision", text=text, mode=mode,
         command=d.command if d else None, target=[t.project_name for t in targets],
         command_conf=d.command_conf if d else None, target_conf=d.target_conf if d else None,
-        source=(d.source if ok_cmd else "fallback") if d else "fallback", reason=reason,
+        source=(d.source if ok_cmd else "fallback") if d else "fallback", reason=reason, say=say,
     )
 
     if mode == "dropped":
@@ -277,8 +326,9 @@ def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> 
 
     return {
         "mode": mode,
-        "beep_twice": not targets,
+        "beep_twice": not targets and not say,
         "targets": [t.project_name for t in targets],
+        "say": say,
         "results": results,
         "decision": d,
     }
@@ -295,7 +345,8 @@ class TtsQueue:
     TTS 재생(sounddevice, 블로킹)이 이벤트 루프를 막지 않도록 분리).
     """
 
-    def __init__(self, tts_engine):
+    def __init__(self, tts_engine, ctx: Optional[ListenerContext] = None):
+        self.ctx = ctx or ListenerContext()
         self._q: queue.Queue[str] = queue.Queue()
         self._tts = tts_engine
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -308,7 +359,9 @@ class TtsQueue:
         self._thread.start()
 
     def enqueue(self, project_name: str, summary: str) -> None:
-        utterance = f"{project_name}, {summary}"
+        self.say(f"{project_name}, {summary}")
+
+    def say(self, utterance: str) -> None:
         self._q.put(utterance)
 
     @property
@@ -328,6 +381,7 @@ class TtsQueue:
         while True:
             utterance = self._q.get()
             print(f"[tts-queue] 재생: {utterance!r}")
+            self.ctx.last_said = utterance
             self._interrupt_requested.clear()
             self._speaking.set()
             try:
@@ -540,9 +594,11 @@ class MicLoop:
             print("[mic-loop] 빈 인식 결과, 라우팅 생략")
             return
 
-        result = route_and_send(self.table, text)
+        result = route_and_send(self.table, text, ctx=self.tts_queue.ctx)
         self.last_route_result = result
         print(f"[mic-loop] 처리 결과: mode={result['mode']} targets={result['targets']}")
+        if result["say"]:
+            self.tts_queue.say(result["say"])
         if result["beep_twice"]:  # 버림·대상 애매 — 아무 데도 안 보냈다는 신호
             play_beep_blocking(BEEP_LOW_HZ)
             time.sleep(0.12)
@@ -604,10 +660,12 @@ class ListenerServer:
                 return
 
             if event == "notify":
-                record.log_event("notify", project_name=project_name, summary=text)
+                kind = msg.get("kind", "stop")  # stop=완료 요약, notification=권한·질문 알림
+                record.log_event("notify", project_name=project_name, summary=text, notice=kind)
                 # 멈춘 세션의 완료 알림도 요약은 갱신하지만 멈춤은 풀지 않는다
                 self.table.upsert_from_notify(session_id, project_name, socket_path, token, summary=text)
-                self.tts_queue.enqueue(project_name, text)
+                if should_speak_notice(self.tts_queue.ctx, kind):
+                    self.tts_queue.enqueue(project_name, text)
                 writer.write(json.dumps({"ok": True}).encode())
             elif event == "shutdown":
                 # /voice-off가 보내는 종료 신호. session_id 등은 형식만 맞으면
