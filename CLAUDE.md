@@ -3,7 +3,7 @@
 화면을 안 보고도 Claude Code로 작업할 수 있게, 완료 음성 요약과 음성 명령 입력을 더하는 애드온.
 접근성(눈이 안 좋은 사용자)에 국한되지 않는다 — 기본 가치는 "다른 일을 하며 여러 프로젝트를
 음성으로 지휘하는 비서"이고, 접근성은 그 일반 기능의 부분집합이다. 자세한 설계: `docs/architecture.md`.
-GitHub: https://github.com/PHM820/Voxcode (비공개)
+GitHub: https://github.com/PHM820/Voxcode (공개, 2026-11-20 — 커밋 작성자 이메일은 GitHub noreply 주소)
 
 ## 먼저 볼 것
 - 아키텍처 전체 그림: `docs/architecture.md`
