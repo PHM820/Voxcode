@@ -73,8 +73,8 @@
 - **처음에 상황 인지**: 그 폴더의 `CLAUDE.md`에 역할과 답하는 형식을 적어 둔다("너는 음성 명령 중재자다.
   `~/.voxcode/state.json`을 먼저 읽어라. 판단 결과는 정해진 JSON 형식으로 파일에만 써라. 코드를 고치지
   마라"). 시작할 때 첫 지시로 상황 파일을 읽힌다.
-- **띄우기**: `/voice-on`이 새 콘솔 창으로 실행(예:
-  `start "Voxcode 관리자" /D %USERPROFILE%\.voxcode\manager cmd /k claude --model claude-haiku-4-5 "상황 파일을 읽고 대기해"`).
+- **띄우기**: `/voice-on`이 `voice/manager.py`의 `launch()`로 최소화된 PowerShell 창에서
+  `claude --model haiku`를 띄운다(2026-11-20 cmd에서 변경 — cmd가 정책으로 막힌 컴퓨터가 있음).
   관리자 세션은 시작·응답 종료 때 자기 소켓·토큰을 `state.json`에 등록한다(그 폴더 전용 훅).
 - **주고받기**: 리스너가 질문(id, 받아쓴 말, Jev 판단과 확신도, 최신 상황)을 관리자 세션에 주입 →
   관리자가 `~/.voxcode/manager/answers/<id>.json`에 답을 씀 → 리스너가 그 파일을 기다림(제한 시간
