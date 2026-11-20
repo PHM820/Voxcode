@@ -31,6 +31,7 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
 
 ## TTS·STT 엔진과 언어
 - 시작점: `voice/tts.py`(`TtsEngine`), `voice/stt.py`(`SttEngine`), `voice/languages.py`(`LANGUAGES`, `VoiceOption`), `.claude/download_tts_model.py`.
+- 한국어 기본 목소리는 Supertonic 3(`VoiceOption.engine == "supertonic"`, `onnx_name` 자리에 스타일 이름 M1·F1…). 모델 한 벌(약 380MB)을 모든 목소리가 같이 쓰고, 추론은 Supertone 공식 `helper.py`를 모델 폴더에서 불러 쓴다(저장소에 복사하지 않음). 다른 곳에 받아 둔 모델은 `models/tts/supertonic3.path`에 경로 한 줄로 가리킨다(`supertonic_dir`). sherpa 모델보다 메모리를 더 쓰고 합성이 느리다(`SUPERTONIC_STEPS`).
 - 함정: 모델은 `models/`(git 제외). mimic3 계열(ko, vi)도 espeak-ng-data가 필요하고 중국어는 lexicon.txt가 필요하다. 한국어 인식 정확도가 낮은 건 whisper 모델 크기 문제가 아니다(small로도 그대로).
 
 ## 켜기·끄기·설정

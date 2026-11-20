@@ -29,6 +29,7 @@ class VoiceOption(NamedTuple):
     onnx_name: str  # 폴더 안의 onnx 파일명 (확장자 포함)
     needs_espeak: bool  # espeak-ng-data 필요 여부(piper·mimic3 계열=True)
     needs_lexicon: bool = False  # lexicon.txt 필요 여부(중국어 vits-zh-ll 계열=True). espeak와 배타적으로 실측 확인됨(2026-09-26)
+    engine: str = "sherpa"  # "sherpa"(위 필드 사용) | "supertonic"(onnx_name 자리에 목소리 스타일 이름, 모델은 공용 폴더)
 
 
 class LanguageOption(NamedTuple):
@@ -45,7 +46,12 @@ LANGUAGES: tuple[LanguageOption, ...] = (
         VoiceOption("vits-piper-en_GB-alan-medium", "Alan (영국, 남성)", "en_GB-alan-medium.onnx", True),
     )),
     LanguageOption("ko", "한국어", "Korean", (
-        VoiceOption("vits-mimic3-ko_KO-kss_low", "kss (여성, 기본값)", "ko_KO-kss_low.onnx", True),
+        # Supertonic 3 (Supertone, 로컬 실행): kss보다 자연스럽다. 모델 약 380MB 공용, 목소리는 스타일 파일만 다름.
+        VoiceOption("supertonic3-M1", "Supertonic 남성 1 (기본값)", "M1", False, engine="supertonic"),
+        VoiceOption("supertonic3-F1", "Supertonic 여성 1", "F1", False, engine="supertonic"),
+        VoiceOption("supertonic3-M2", "Supertonic 남성 2", "M2", False, engine="supertonic"),
+        VoiceOption("supertonic3-F2", "Supertonic 여성 2", "F2", False, engine="supertonic"),
+        VoiceOption("vits-mimic3-ko_KO-kss_low", "kss (여성, 가벼움 — 모델 약 60MB)", "ko_KO-kss_low.onnx", True),
     )),
     LanguageOption("zh", "중국어", "Chinese", (
         VoiceOption("sherpa-onnx-vits-zh-ll", "zh-ll (여성, 5화자 중 0번)", "model.onnx", False, needs_lexicon=True),
@@ -117,3 +123,15 @@ def find_voice(language_code: str, voice_id: str) -> VoiceOption | None:
 
 def download_url(voice_id: str) -> str:
     return f"{RELEASE_BASE}/{voice_id}.tar.bz2"
+
+
+# Supertonic 3: 공식 Hugging Face 저장소의 고정 리비전 + 공식 추론 helper.py(MIT).
+SUPERTONIC_DIR_NAME = "supertonic3"
+SUPERTONIC_HF = ("https://huggingface.co/supertone-oss-archive/supertonic-3/resolve/"
+                 "aafc6e32416a594460b32413efc49d7fe4ce6d46/")
+SUPERTONIC_HELPER = "https://raw.githubusercontent.com/supertone-oss-archive/supertonic/main/py/helper.py"
+SUPERTONIC_FILES = (
+    "onnx/duration_predictor.onnx", "onnx/text_encoder.onnx", "onnx/vector_estimator.onnx",
+    "onnx/vocoder.onnx", "onnx/tts.json", "onnx/unicode_indexer.json", "LICENSE",
+    *(f"voice_styles/{g}{n}.json" for g in "MF" for n in range(1, 6)),
+)

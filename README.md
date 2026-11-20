@@ -43,7 +43,7 @@ Voxcode는 그것을 다시 만들지 않고, 훅(hook)으로 위에 얹어 두 
 setup.cmd
 ```
 
-가상환경(`.venv`), 패키지, 받아쓰기 모델(약 147MB), 기본 영어 음성 모델(약 64MB)을 받습니다.
+가상환경(`.venv`), 패키지, 받아쓰기 모델(약 147MB), 기본 영어 음성 모델(약 64MB)을 받습니다. 한국어를 고르면 `/voice-on` 처음 실행 때 Supertonic 3 음성 모델(약 380MB)을 받습니다.
 SSL 인증서 오류(`CERTIFICATE_VERIFY_FAILED`)가 나면 백신의 SSL 검사 때문일 가능성이 높습니다 → [known-issues 1번](docs/known-issues.md#1-pip-ssl-인증서-검증-실패-백신-ssl-검사-소프트웨어-사용자-전원-영향-가능).
 
 **2. 설치 확인**

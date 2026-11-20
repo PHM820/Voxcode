@@ -155,4 +155,32 @@ assert not (SKILLS_DIR / "voice-on").exists(), "해제 후 폴더가 남음"
 assert foreign.read_text(encoding="utf-8").endswith("내 스킬"), "남의 스킬이 바뀜"
 assert skills_install.uninstall()["voice-on"] == "not_installed"
 
+# --- 6. Supertonic 모델 폴더 찾기: 기본 위치 / .path로 가리킨 다른 폴더(assets/ 아래 구조) / 없음 ---
+from voice import languages, tts  # noqa: E402
+
+for v in (v for lang in languages.LANGUAGES for v in lang.voices if v.engine == "supertonic"):
+    assert f"voice_styles/{v.onnx_name}.json" in languages.SUPERTONIC_FILES, f"받지 않는 목소리 스타일: {v.id}"
+assert languages.find_language("ko").voices[0].engine == "supertonic", "한국어 기본 목소리가 Supertonic이 아님"
+
+
+def fake_model(base: Path, helper_at: Path):
+    (base / "onnx").mkdir(parents=True)
+    (base / "onnx" / "tts.json").write_text("{}", encoding="utf-8")
+    (base / "voice_styles").mkdir()
+    helper_at.mkdir(parents=True, exist_ok=True)
+    (helper_at / "helper.py").write_text("", encoding="utf-8")
+
+
+MROOT = HOME / "models-tts"
+MROOT.mkdir()
+assert tts.supertonic_dir(MROOT) is None, "모델이 없는데 찾았다고 함"
+elsewhere = HOME / "다른 폴더" / "supertonic3"
+fake_model(elsewhere / "assets", elsewhere)
+(MROOT / "supertonic3.path").write_text(f'"{elsewhere}"\n', encoding="utf-8")
+assert tts.supertonic_dir(MROOT) == elsewhere / "assets", ".path로 가리킨 폴더를 못 찾음"
+fake_model(MROOT / "supertonic3", MROOT / "supertonic3")
+assert tts.supertonic_dir(MROOT) == MROOT / "supertonic3", "기본 위치보다 .path를 먼저 씀"
+(MROOT / "supertonic3" / "helper.py").unlink()
+assert tts.supertonic_dir(MROOT) == elsewhere / "assets", "helper.py 없는 기본 폴더를 씀"
+
 print("control checks OK")

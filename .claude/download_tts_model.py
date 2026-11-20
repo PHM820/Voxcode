@@ -22,7 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voice.languages import LANGUAGES, download_url, find_language, find_voice  # noqa: E402
+from voice.languages import (  # noqa: E402
+    LANGUAGES, SUPERTONIC_DIR_NAME, SUPERTONIC_FILES, SUPERTONIC_HELPER, SUPERTONIC_HF,
+    download_url, find_language, find_voice,
+)
 
 MODELS_ROOT = Path("models/tts")
 
@@ -50,8 +53,40 @@ def resolve_voice(args: list[str]):
     sys.exit(1)
 
 
+def download_supertonic() -> None:
+    """Supertonic 3 공용 모델(약 380MB)을 models/tts/supertonic3/에 받는다. 목소리는 모두 이 한 벌을 쓴다."""
+    from voice.tts import supertonic_dir
+
+    if supertonic_dir(MODELS_ROOT) is not None:
+        print(f"Already downloaded: {supertonic_dir(MODELS_ROOT)}")
+        return
+    target = MODELS_ROOT / SUPERTONIC_DIR_NAME
+    jobs = [(SUPERTONIC_HELPER, target / "helper.py")]
+    jobs += [(SUPERTONIC_HF + rel, target / rel) for rel in SUPERTONIC_FILES]
+    for url, dest in jobs:
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")  # 중간에 끊기면 다음 실행 때 다시 받는다
+        print(f"Downloading {url}")
+        try:
+            urllib.request.urlretrieve(url, part)
+            part.replace(dest)
+        except Exception as e:
+            part.unlink(missing_ok=True)
+            print(f"SETUP FAILED: download error: {e}\nTry manually: {url}", file=sys.stderr)
+            sys.exit(1)
+    if supertonic_dir(MODELS_ROOT) is None:
+        print(f"SETUP FAILED: files downloaded but layout unexpected: {target}", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: {target}")
+
+
 def main():
     voice = resolve_voice(sys.argv[1:])
+    if voice.engine == "supertonic":
+        download_supertonic()
+        return
     target_dir = MODELS_ROOT / voice.id
     onnx_path = target_dir / voice.onnx_name
 
