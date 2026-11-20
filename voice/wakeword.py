@@ -34,7 +34,10 @@ from typing import Callable, Optional
 logger = logging.getLogger("voice.wakeword")
 
 DEFAULT_WAKE_WORD = "자비스"
-DEFAULT_THRESHOLD = 0.65  # lwake listen_cmd 예제 기본값 부재 — compare 실측 후 임계값 정할 것(TODO)
+# lwake는 "거리 < 임계값"이면 감지(작을수록 엄격). 2026-11-20 실측(embedding): 같은 사람의 "자비스"
+# 녹음끼리 0.02~0.04, 무작위 잡음과 녹음 사이 0.15~0.20. 예전 값 0.65는 잡음까지 다 통과시켜
+# 혼자 삑삑 울렸다. 감지될 때마다 거리를 log.jsonl("wake")에 남기니 그걸 보고 다시 조정할 것.
+DEFAULT_THRESHOLD = 0.08
 DEFAULT_ONBOARD_COUNT = 4  # decisions.md: "3~4회 녹음"
 DEFAULT_SAMPLE_DIR = Path("models/wakeword")
 VOICE_SETTINGS_PATH = Path(".claude/voice-settings.json")

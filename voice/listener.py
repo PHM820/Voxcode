@@ -656,7 +656,9 @@ class MicLoop:
         class _WakeDetected(BaseException):
             pass
 
-        def _on_detect(_detection: dict) -> None:
+        def _on_detect(detection: dict) -> None:
+            # 임계값 조정용 기록 — 오탐이 나면 이 거리와 직후 heard를 보고 판단한다.
+            record.log_event("wake", distance=round(float(detection.get("distance", -1)), 4))
             raise _WakeDetected()
 
         # lwake.listen()은 자체 while True 루프라, self._stop을 주기적으로
