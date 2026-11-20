@@ -83,7 +83,7 @@ def _manual_roundtrip_test():
 
     text_in = "안녕하세요. 작업이 끝났습니다."
     print(f"[stt-test] TTS 합성: {text_in!r}")
-    tts = TtsEngine()
+    tts = TtsEngine(language_code="ko")
     samples, sample_rate = tts.synthesize(text_in)
     print(f"[stt-test] 합성 샘플레이트: {sample_rate}Hz, 길이: {len(samples)}")
 

@@ -339,7 +339,6 @@ class TtsQueue:
         self._q: queue.Queue[str] = queue.Queue()
         self._tts = tts_engine
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self._history: list[str] = []  # 테스트 검증용: 실제 재생된 멘트 기록
         # 바지-인(architecture.md 4번) 지원용 상태. sounddevice 재생은 self._tts.speak()가
         # 블로킹으로 처리하므로, "지금 재생 중"임을 MicLoop이 확인할 플래그가 필요하다.
         self._speaking = threading.Event()
@@ -369,7 +368,6 @@ class TtsQueue:
         while True:
             utterance = self._q.get()
             print(f"[tts-queue] 재생: {utterance!r}")
-            self._history.append(utterance)
             self._interrupt_requested.clear()
             self._speaking.set()
             try:
@@ -379,19 +377,6 @@ class TtsQueue:
             finally:
                 self._speaking.clear()
             self._q.task_done()
-
-    def wait_idle(self, timeout: float = 30.0) -> bool:
-        """테스트용: 큐가 다 소비될 때까지 대기. join()에 timeout이 없어 폴링으로 구현."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._q.unfinished_tasks == 0:
-                return True
-            time.sleep(0.1)
-        return False
-
-    @property
-    def history(self) -> list[str]:
-        return list(self._history)
 
 
 # ---------------------------------------------------------------------------
@@ -720,27 +705,6 @@ class ListenerServer:
             await self._server.serve_forever()
 
 
-def run_server_in_background(table: SessionTable, tts_queue: TtsQueue,
-                              host: str = HOST, port: int = PORT):
-    """테스트/수동 실행에서 쓰기 쉽게, 별도 스레드에서 asyncio 서버를 돌린다.
-
-    반환값: (asyncio.AbstractEventLoop, threading.Thread) — 종료 시
-    loop.call_soon_threadsafe(loop.stop)으로 멈출 수 있다.
-    """
-    loop = asyncio.new_event_loop()
-
-    def _run():
-        asyncio.set_event_loop(loop)
-        server = ListenerServer(table, tts_queue, host, port)
-        loop.run_until_complete(server.start())
-        loop.run_forever()
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    time.sleep(0.3)  # 서버 bind 대기 (테스트 편의용 짧은 대기)
-    return loop, thread
-
-
 # ---------------------------------------------------------------------------
 # 진입점
 # ---------------------------------------------------------------------------
@@ -750,15 +714,10 @@ def main():
     from voice.config import load_settings
 
     settings = load_settings()
-    language_code = settings.get("language", "ko")
-    voice_id = settings.get("voice_id")
+    language_code, voice_id = settings["language"], settings["voice_id"]
 
     print(f"[listener] TTS 모델 로딩 중... (language={language_code}, voice={voice_id})")
-    if voice_id:
-        tts_engine = TtsEngine(language_code=language_code, voice_id=voice_id)
-    else:
-        # voice_id가 아직 없으면(온보딩 전 기존 설치) 레거시 기본 모델 경로로 폴백.
-        tts_engine = TtsEngine()
+    tts_engine = TtsEngine(language_code=language_code, voice_id=voice_id)
     print("[listener] TTS 모델 로딩 완료")
 
     table = SessionTable()
