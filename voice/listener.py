@@ -607,15 +607,8 @@ class MicLoop:
             print("[mic-loop] 빈 인식 결과, 라우팅 생략")
             return
 
-        drop, score = should_drop_transcript(text)
-        if drop:
-            # 화면 없이 쓰는 사용자가 "버려졌다"는 걸 알 수 있게 낮은 비프를 한 번 더
-            # (완료 비프 1회 = 정상 접수, 2회 = 못 알아들음). 로그는 기준선 조정용 라벨 자료.
-            print(f"[mic-loop] 환각으로 판정해 버림 (score={score:.2f}): {text!r}")
-            play_beep_blocking(BEEP_LOW_HZ)
-            return
-        if score is not None:
-            print(f"[mic-loop] 환각 판정 통과 (score={score:.2f})")
+        # 환각 필터(should_drop_transcript, voice/judge.py)는 연결 해제 상태(2026-11-20) —
+        # 실제 사용에서 환각이 문제로 확인되면 여기서 다시 호출한다.
 
         result = route_and_send(self.table, text)
         self.last_route_result = result
@@ -773,11 +766,14 @@ def main():
     tts_queue.start()
 
     server = ListenerServer(table, tts_queue)
+    # 마이크 루프(호출어 → 받아쓰기 → 라우팅). 무거운 STT 모델은 스레드 안에서 로딩되고,
+    # 호출어 온보딩이 안 돼 있으면 로그만 남기고 스스로 끝난다 — 음성 요약(TCP)은 그대로 동작.
+    mic_loop = MicLoop(table, tts_queue)
+    mic_loop.start()
 
     async def _main():
         await server.start()
         print(f"[listener] 대기 중... (Ctrl+C 또는 /voice-off로 종료)")
-        # TODO: 실시간 마이크 VAD/wakeword/STT 루프는 이 최소 버전 범위 밖.
         try:
             await server._server.serve_forever()
         except asyncio.CancelledError:
@@ -787,6 +783,7 @@ def main():
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+    mic_loop.stop()
     print("\n[listener] 종료")
 
 

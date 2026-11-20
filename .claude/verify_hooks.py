@@ -31,4 +31,15 @@ for hook in ("hooks/on-stop.py", "hooks/on-notification.py", "hooks/on-user-prom
         print("stderr:", result.stderr)
         sys.exit(1)
 
+# on-stop.py는 응답의 마지막 문단만(마크다운 기호 제거) TTS로 보낸다
+import importlib.util  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("on_stop", "hooks/on-stop.py")
+on_stop = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(on_stop)
+msg = "| 표 | 내용 |\n|---|---|\n\n- 목록\n\n**마이크 루프를 연결**했고 `verify`도 통과했습니다.\n"
+assert on_stop.last_paragraph(msg) == "마이크 루프를 연결했고 verify도 통과했습니다.", on_stop.last_paragraph(msg)
+assert on_stop.last_paragraph("한 문단뿐") == "한 문단뿐"
+assert on_stop.last_paragraph("\n\n") == ""
+
 print("hooks import + run OK")

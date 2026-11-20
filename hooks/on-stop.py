@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import sys
 from pathlib import Path
@@ -47,6 +48,18 @@ def _is_delegate_worker(cwd: str) -> bool:
     return "\\.claude\\worktrees\\" in cwd or "/.claude/worktrees/" in cwd
 
 
+def last_paragraph(text: str) -> str:
+    """응답의 마지막 문단만 TTS용으로 남긴다(마크다운 강조·코드 표시 기호 제거).
+
+    응답 전체를 보내면 표·목록까지 전부 읽힌다. 음성모드 지침이 "끝을 1~2문장 요약으로
+    맺으라"고 하므로 마지막 문단이 곧 요약이다.
+    """
+    paragraphs = [p.strip() for p in text.replace("\r\n", "\n").split("\n\n") if p.strip()]
+    if not paragraphs:
+        return ""
+    return re.sub(r"[*`#]", "", paragraphs[-1]).strip()
+
+
 def main() -> int:
     try:
         # sys.stdin.read()는 Windows에서 로케일 코드페이지(cp949 등)로 디코딩을
@@ -59,7 +72,7 @@ def main() -> int:
         # stdin이 비었거나 JSON이 아니어도 훅은 실패로 죽지 않는다.
         payload = {}
 
-    text = payload.get("last_assistant_message") or ""
+    text = last_paragraph(payload.get("last_assistant_message") or "")
     if not text:
         # 요약할 내용이 없으면 알릴 것도 없으니 조용히 종료.
         return 0
