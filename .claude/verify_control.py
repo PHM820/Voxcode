@@ -158,9 +158,9 @@ assert skills_install.uninstall()["voice-on"] == "not_installed"
 # --- 6. Supertonic 모델 폴더 찾기: 기본 위치 / .path로 가리킨 다른 폴더(assets/ 아래 구조) / 없음 ---
 from voice import languages, tts  # noqa: E402
 
-for v in (v for lang in languages.LANGUAGES for v in lang.voices if v.engine == "supertonic"):
-    assert f"voice_styles/{v.onnx_name}.json" in languages.SUPERTONIC_FILES, f"받지 않는 목소리 스타일: {v.id}"
-assert languages.find_language("ko").voices[0].engine == "supertonic", "한국어 기본 목소리가 Supertonic이 아님"
+for v in (v for lang in languages.LANGUAGES for v in lang.voices):
+    assert f"voice_styles/{v.style}.json" in languages.SUPERTONIC_FILES, f"받지 않는 목소리 스타일: {v.id}"
+assert languages.find_language("zh") is None and "zh" in languages.UNSUPPORTED_TTS_NOTE, "중국어 처리 바뀜"
 
 
 def fake_model(base: Path, helper_at: Path):

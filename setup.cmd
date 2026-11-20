@@ -10,11 +10,8 @@ set VENV_DIR=.venv
 set MODELS_DIR=models
 set STT_MODEL_DIR=%MODELS_DIR%\stt
 set STT_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-REM TTS 모델은 언어 선택에 따라 다르므로 하드코딩하지 않는다. setup.cmd 시점엔
-REM 아직 /voice-on 온보딩(대화 언어 추천 방식, 2026-09-26 결정)을 거치지 않았으므로
-REM 3/4 단계는 영어를 임시로 받아 둘 뿐 - 실제 사용 언어는 /voice-on 최초 실행 때
-REM 확정되고, 그 스킬이 같은 다운로드 스크립트를 그 언어의 voice_id로 다시 호출한다
-REM (voice/languages.py 참고).
+REM TTS 모델(Supertonic 3)은 모든 언어·목소리가 한 벌을 같이 쓴다 - 언어는 /voice-on 최초
+REM 실행 때 고르지만 받을 모델은 같으므로 여기서 미리 받는다 (voice/languages.py 참고).
 
 echo === 1/4: Python venv ===
 if exist "%VENV_DIR%\Scripts\python.exe" (
@@ -52,10 +49,8 @@ echo   deleting %VENV_DIR% undoes it completely.
 exit /b 1
 :pip_ok
 
-echo === 3/4: TTS model (default: English, ~64MB) ===
-echo Other languages/voices are downloaded later by the /voice-on onboarding
-echo (first run) - see voice\languages.py for the full list.
-"%VENV_PY%" .claude\download_tts_model.py --language en
+echo === 3/4: TTS model (Supertonic 3, all languages, ~383MB) ===
+"%VENV_PY%" .claude\download_tts_model.py
 if errorlevel 1 (
     echo SETUP FAILED: see error above.
     exit /b 1

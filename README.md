@@ -43,7 +43,7 @@ Voxcode는 그것을 다시 만들지 않고, 훅(hook)으로 위에 얹어 두 
 setup.cmd
 ```
 
-가상환경(`.venv`), 패키지, 받아쓰기 모델(약 147MB), 기본 영어 음성 모델(약 64MB)을 받습니다. 한국어를 고르면 `/voice-on` 처음 실행 때 Supertonic 3 음성 모델(약 380MB)을 받습니다.
+가상환경(`.venv`), 패키지, 받아쓰기 모델(약 147MB), 음성 모델 Supertonic 3(약 383MB, 모든 언어 공통)을 받습니다.
 SSL 인증서 오류(`CERTIFICATE_VERIFY_FAILED`)가 나면 백신의 SSL 검사 때문일 가능성이 높습니다 → [known-issues 1번](docs/known-issues.md#1-pip-ssl-인증서-검증-실패-백신-ssl-검사-소프트웨어-사용자-전원-영향-가능).
 
 **2. 설치 확인**
@@ -157,7 +157,7 @@ TYPESAFE_API_KEY=<키>
 
 **CC BY-NC-SA 4.0** (저작자표시-비영리-동일조건변경허락) — 전문은 [`LICENSE`](LICENSE).
 
-한국어 음성 모델(`vits-mimic3-ko_KO-kss_low`, KSS 데이터셋)이 CC BY-NC-SA 4.0(비상업 전용)이라, 이 모델을 포함해 배포하는 결과물도 같은 조건을 따릅니다.
+처음에 쓰던 한국어 음성 모델(kss, CC BY-NC-SA 4.0)에 맞춰 정한 라이선스입니다. 지금 음성 모델은 Supertonic 3(BigScience Open RAIL-M, 추론 코드 MIT)이고, 설치할 때 공식 저장소에서 받습니다.
 코드만 따로 MIT 등으로 풀 수도 있었지만, "프로젝트를 완전 비상업으로 유지한다"는 결정(`docs/decisions.md` 2026-09-25)에 맞춰 저장소 전체를 같은 라이선스로 통일했습니다. 후원·기관 편입 등으로 성격이 바뀌면 다시 검토합니다.
 
 ---

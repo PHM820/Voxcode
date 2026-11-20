@@ -61,7 +61,9 @@ https://creativecommons.org/licenses/by-nc-sa/4.0/
 ================================================================================
 
 Third-party model licenses bundled or downloaded by this project:
-  - vits-mimic3-ko_KO-kss_low (Korean TTS voice model, downloaded by
-    setup.cmd into models/tts/): CC-BY-NC-SA 4.0, derived from the KSS
-    (Korean Single Speaker) dataset. See docs/decisions.md for the license
-    review and the conditions under which this project accepted it.
+  - Supertonic 3 (TTS model by Supertone Inc., downloaded by setup.cmd into
+    models/tts/supertonic3/ from huggingface.co/supertone-oss-archive/supertonic-3):
+    BigScience Open RAIL-M. Its inference helper (helper.py, downloaded alongside)
+    is MIT. Used since 2026-11-20.
+  - (Until 2026-11-20) vits-mimic3-ko_KO-kss_low (Korean TTS voice model):
+    CC-BY-NC-SA 4.0, derived from the KSS dataset. No longer downloaded.

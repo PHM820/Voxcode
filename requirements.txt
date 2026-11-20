@@ -3,7 +3,7 @@
 # Python 3.12용 사전빌드 wheel을 못 찾아 소스 컴파일로 빠졌던 문제)의 교훈. 최소 버전만
 # 지정해 pip이 그 시점 최신 사전빌드 wheel을 고르게 둔다.
 
-sherpa-onnx>=1.13.0
+onnxruntime>=1.20.0  # TTS(Supertonic 3) 추론
 pywhispercpp>=1.5.0
 local-wake>=0.1.0
 sounddevice>=0.5.0

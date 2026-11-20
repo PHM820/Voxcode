@@ -31,8 +31,8 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
 
 ## TTS·STT 엔진과 언어
 - 시작점: `voice/tts.py`(`TtsEngine`), `voice/stt.py`(`SttEngine`), `voice/languages.py`(`LANGUAGES`, `VoiceOption`), `.claude/download_tts_model.py`.
-- 한국어 기본 목소리는 Supertonic 3(`VoiceOption.engine == "supertonic"`, `onnx_name` 자리에 스타일 이름 M1·F1…). 모델 한 벌(약 380MB)을 모든 목소리가 같이 쓰고, 추론은 Supertone 공식 `helper.py`를 모델 폴더에서 불러 쓴다(저장소에 복사하지 않음). 다른 곳에 받아 둔 모델은 `models/tts/supertonic3.path`에 경로 한 줄로 가리킨다(`supertonic_dir`). sherpa 모델보다 메모리를 더 쓰고 합성이 느리다(`SUPERTONIC_STEPS`).
-- 함정: 모델은 `models/`(git 제외). mimic3 계열(ko, vi)도 espeak-ng-data가 필요하고 중국어는 lexicon.txt가 필요하다. 한국어 인식 정확도가 낮은 건 whisper 모델 크기 문제가 아니다(small로도 그대로).
+- 엔진은 Supertonic 3 하나(2026-11-20 sherpa-onnx에서 교체). 모델 한 벌(약 383MB)을 모든 언어·목소리가 같이 쓰고, 목소리는 언어와 무관한 스타일 파일(`VoiceOption.style`). 추론은 Supertone 공식 `helper.py`를 모델 폴더에서 불러 쓴다(저장소에 복사하지 않음).
+- 함정: 모델은 `models/`(git 제외). 다른 곳에 받아 둔 모델은 `models/tts/supertonic3.path`에 경로 한 줄로 가리킨다(`supertonic_dir`, 폴더 안에 `assets/`가 있어도 됨). 목록에 없는 언어 코드(예: 예전 설정의 `zh`)를 엔진에 넘기면 거부되므로 `TtsEngine`이 기본 언어로 바꾼다. 중국어는 Supertonic이 못 읽어 뺐다(`UNSUPPORTED_TTS_NOTE`). 한국어 받아쓰기 정확도가 낮은 건 whisper 모델 크기 문제가 아니다(small로도 그대로).
 
 ## 켜기·끄기·설정
 - 시작점: `voice/control.py`(`on`·`off`·`status` — 스킬이 이 한 줄을 부른다), `voice/hooks_install.py`, `.claude/skills/voice-on/SKILL.md`(최초 언어·목소리 온보딩), `voice/config.py`(`is_enabled`·`set_enabled` 전역, `load_settings` 프로젝트).
