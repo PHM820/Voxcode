@@ -129,7 +129,61 @@ state = json.loads((HOME / "state.json").read_text(encoding="utf-8"))
 assert {x["project_name"]: x["paused"] for x in state["sessions"]} == {"proj-a": False, "proj-b": False}
 assert state["listener_pid"] == os.getpid()
 
-# --- 11. 옛 규칙이 남아 있지 않음 ---
+# --- 11. TCP 완료 알림 경로(handle_client): 기록 + 요약 갱신, 멈춤 유지, detach는 모르는 이벤트 ---
+import asyncio  # noqa: E402
+
+
+class FakeReader:
+    def __init__(self, msg):
+        self.raw = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+
+    async def read(self, n):
+        return self.raw
+
+
+class FakeWriter:
+    def __init__(self):
+        self.out = b""
+
+    def write(self, b):
+        self.out += b
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class FakeTts:
+    def __init__(self):
+        self.items = []
+
+    def enqueue(self, project, summary):
+        self.items.append((project, summary))
+
+
+def call_server(server, msg):
+    w = FakeWriter()
+    asyncio.run(server.handle_client(FakeReader(msg), w))
+    return json.loads(w.out.decode("utf-8"))
+
+
+t = SessionTable()
+tts = FakeTts()
+server = listener.ListenerServer(t, tts)
+note = {"event": "notify", "session_id": "k-n", "project_name": "proj-n",
+        "text": "테스트 다 통과", "socket_path": "k-n", "token": "tok"}
+assert call_server(server, note) == {"ok": True}
+assert t.get("k-n").last_summary == "테스트 다 통과" and tts.items == [("proj-n", "테스트 다 통과")]
+t.set_paused("k-n", True)
+call_server(server, note)
+assert t.get("k-n").paused, "TCP 완료 알림이 멈춘 세션을 살림"
+assert call_server(server, {**note, "event": "detach"})["ok"] is False, "detach 이벤트가 남아 있음"
+logged = [json.loads(l) for l in LOG.read_text(encoding="utf-8").splitlines()]
+assert any(e["kind"] == "notify" and e["summary"] == "테스트 다 통과" for e in logged)
+
+# --- 12. 옛 규칙이 남아 있지 않음 ---
 for gone in ("mark_detached", "mark_attached", "find_by_project_prefix"):
     assert not hasattr(SessionTable, gone), gone
 for gone in ("parse_stop_command", "STOP_PREFIX", "should_drop_transcript"):
