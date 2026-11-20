@@ -13,8 +13,8 @@ docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(�
   5. 라우팅 결정된 세션에 voice/inject.js를 subprocess로 호출해 postback
   6. 실시간 마이크 루프(MicLoop): 항상 마이크를 열어 VAD+wakeword로 호출어
      대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send로
-     라우팅. TTS 재생 중에는 VAD만으로 바지-인 감지 → 재생 중단 + 즉시 받아쓰기
-     (architecture.md "3. 유휴 상태에서 호출어로 명령", "4. TTS 재생 중 바지-인")
+     라우팅. TTS 재생 중 호출어가 들리면 재생을 끊고 받아쓰기
+     (architecture.md "3. 유휴 상태에서 호출어로 명령")
 
 MicLoop은 별도 스레드(daemon)에서 돌아 asyncio TCP 서버와 동시에 동작한다
 (작업 지시서 4번 요구사항).
@@ -339,7 +339,7 @@ class TtsQueue:
         self._q: queue.Queue[str] = queue.Queue()
         self._tts = tts_engine
         self._thread = threading.Thread(target=self._run, daemon=True)
-        # 바지-인(architecture.md 4번) 지원용 상태. sounddevice 재생은 self._tts.speak()가
+        # 호출어로 재생을 끊을 때 쓰는 상태. sounddevice 재생은 self._tts.speak()가
         # 블로킹으로 처리하므로, "지금 재생 중"임을 MicLoop이 확인할 플래그가 필요하다.
         self._speaking = threading.Event()
         self._interrupt_requested = threading.Event()
@@ -353,11 +353,11 @@ class TtsQueue:
 
     @property
     def is_speaking(self) -> bool:
-        """MicLoop이 바지-인 감지 대상 구간인지 판단할 때 쓴다."""
+        """MicLoop이 호출어 감지 시 재생 중인지 확인할 때 쓴다."""
         return self._speaking.is_set()
 
     def interrupt(self) -> None:
-        """현재 재생 중인 TTS를 즉시 중단시킨다 (바지-인 트리거 시 MicLoop이 호출)."""
+        """현재 재생 중인 TTS를 즉시 중단시킨다 (호출어 감지 시 MicLoop이 호출)."""
         self._interrupt_requested.set()
         try:
             self._tts.stop()
@@ -415,8 +415,7 @@ def play_beep_blocking(freq_hz: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 실시간 마이크 루프 (architecture.md "3. 유휴 상태에서 호출어로 명령",
-# "4. TTS 재생 중 바지-인")
+# 실시간 마이크 루프 (architecture.md "3. 유휴 상태에서 호출어로 명령")
 # ---------------------------------------------------------------------------
 
 MIC_SAMPLE_RATE = 16000  # voice/vad.py, voice/stt.py 모두 16kHz 기준
@@ -424,7 +423,7 @@ DICTATION_MAX_S = 15.0  # 받아쓰기 최대 길이 안전장치 (무한정 녹
 
 
 class MicLoop:
-    """상시 마이크 루프: 유휴 상태에서는 호출어 대기, TTS 재생 중에는 바지-인 감지.
+    """상시 마이크 루프: 호출어 대기 → 받아쓰기 → 라우팅. TTS 재생 중 호출어가 들리면 재생을 끊는다.
 
     별도 스레드(daemon)에서 run()을 실행해 asyncio TCP 서버와 동시에 돈다
     (작업 지시서 4번). 무거운 모델(SttEngine, WakeWordDetector)은 스레드
@@ -472,7 +471,7 @@ class MicLoop:
     def run(self) -> None:
         """상시 루프: sounddevice 입력 스트림 하나를 열어 계속 청크를 읽는다."""
         import sounddevice as sd
-        from voice.vad import SpeechStartDetector, CHUNK_SAMPLES
+        from voice.vad import CHUNK_SAMPLES
 
         if not self._wake_detector.is_onboarded():
             print(
@@ -485,26 +484,15 @@ class MicLoop:
         print("[mic-loop] 마이크 루프 시작 (호출어 대기)")
         with sd.InputStream(samplerate=self.sample_rate, channels=1,
                              dtype=np.float32, blocksize=CHUNK_SAMPLES) as stream:
-            barge_in_detector = SpeechStartDetector(sample_rate=self.sample_rate)
             while not self._stop.is_set():
-                if self.tts_queue.is_speaking:
-                    # 4. TTS 재생 중 바지-인: VAD로 발화 시작만 감지, 호출어 불필요
-                    chunk, _overflow = stream.read(CHUNK_SAMPLES)
-                    chunk = chunk[:, 0]
-                    if barge_in_detector.push(chunk):
-                        print("[mic-loop] 바지-인 감지: TTS 중단 + 받아쓰기 진입")
-                        self.tts_queue.interrupt()
-                        barge_in_detector.reset()
-                        self._dictation_cycle(stream, play_entry_beep=True)
-                    continue
-                barge_in_detector.reset()
-
-                # 3. 유휴 상태: 호출어 감지 대기 (lwake.listen()은 blocking이라
-                # 감지 콜백 안에서 예외를 던져 빠져나온다)
+                # TTS 재생 중에도 호출어로만 받아쓰기에 들어간다. 말소리만으로 끼어들게(바지-인)
+                # 했더니 노트북 내장 마이크가 TTS 소리 자체를 사람 말로 착각할 수 있어 뺐다(2026-11-20).
                 self._wait_for_wakeword(stream)
                 if self._stop.is_set():
                     break
                 print("[mic-loop] 호출어 감지: 받아쓰기 진입")
+                if self.tts_queue.is_speaking:
+                    self.tts_queue.interrupt()
                 self._dictation_cycle(stream, play_entry_beep=True)
 
         print("[mic-loop] 마이크 루프 종료")

@@ -4,13 +4,8 @@
 local-wake(`lwake`) 패키지가 `silero-vad`를 의존성으로 이미 설치해두므로
 별도 설치가 필요 없다 (CLAUDE_MAP.md, requirements.txt의 local-wake 참고).
 
-두 가지 용도로 쓰인다 (작업 지시서 2번):
-  (a) 호출어 감지 후 받아쓰기 종료 시점 판단 — 침묵이 일정 시간 이상
-      지속되면 발화가 끝났다고 본다 (SpeechEndDetector)
-  (b) TTS 재생 중 사용자 발화 시작 감지 — 바지-인(barge-in) 트리거
-      (SpeechStartDetector)
-
-둘 다 내부적으로 Silero VAD의 `VADIterator`(청크 단위 스트리밍 API)를 쓴다.
+호출어 감지 후 받아쓰기 종료 시점을 판단한다 — 침묵이 일정 시간 이상 지속되면
+발화가 끝났다고 본다(SpeechEndDetector). 내부적으로 Silero VAD의 `VADIterator`(청크 단위 스트리밍 API)를 쓴다.
 마이크에서 오는 실시간 청크를 한 번에 하나씩 넣는 구조라 listener.py의
 마이크 루프와 자연스럽게 맞물린다.
 """
@@ -99,40 +94,6 @@ class SpeechEndDetector:
         self._samples_processed = 0
         self._last_speech_end_samples = None
         self._finished = False
-
-
-class SpeechStartDetector:
-    """TTS 재생 중 사용자 발화 "시작"만 감지한다 (바지-인 트리거).
-
-    발화 종료까지 기다릴 필요 없이, 말을 시작한 순간 True를 반환하면 된다
-    (그 시점에 TTS를 끊고 받아쓰기 모드로 전환).
-    """
-
-    def __init__(self, threshold: float = 0.5, sample_rate: int = SAMPLE_RATE):
-        self._model = _get_model()
-        self._sample_rate = sample_rate
-
-        from silero_vad import VADIterator
-        self._vad_iter = VADIterator(
-            self._model, threshold=threshold, sampling_rate=sample_rate,
-        )
-        self._triggered = False
-
-    def push(self, chunk: np.ndarray) -> bool:
-        """청크를 넣고, 이번 청크에서 발화 시작이 감지됐으면 True."""
-        result = self._vad_iter(chunk, return_seconds=False)
-        if result is not None and "start" in result:
-            self._triggered = True
-            return True
-        return False
-
-    @property
-    def triggered(self) -> bool:
-        return self._triggered
-
-    def reset(self) -> None:
-        self._vad_iter.reset_states()
-        self._triggered = False
 
 
 def detect_speech_segments(audio: np.ndarray, sample_rate: int = SAMPLE_RATE,
