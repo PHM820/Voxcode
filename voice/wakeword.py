@@ -34,10 +34,12 @@ from typing import Callable, Optional
 logger = logging.getLogger("voice.wakeword")
 
 DEFAULT_WAKE_WORD = "자비스"
-# lwake는 "거리 < 임계값"이면 감지(작을수록 엄격). 2026-11-20 실측(embedding): 같은 사람의 "자비스"
-# 녹음끼리 0.02~0.04, 무작위 잡음과 녹음 사이 0.15~0.20. 예전 값 0.65는 잡음까지 다 통과시켜
-# 혼자 삑삑 울렸다. 감지될 때마다 거리를 log.jsonl("wake")에 남기니 그걸 보고 다시 조정할 것.
-DEFAULT_THRESHOLD = 0.08
+# lwake는 "거리 < 임계값"이면 감지(작을수록 엄격). 2026-11-20 이 PC 실측(embedding, 2초 창):
+# - 실제 마이크로 말한 "자비스": 0.112~0.129 (녹음 샘플끼리는 0.02~0.04지만 실시간 창엔 앞뒤 무음이 섞여 멀어짐)
+# - 조용할 때: 0.136~0.143, 말하는 도중 창: 0.15~0.25, 무작위 잡음: 0.15~0.20
+# 예전 0.65는 잡음까지 통과시켜 혼자 삑삑 울렸고, 0.08은 실제 호출도 못 잡았다. 여유가 좁으니
+# 감지 때마다 log.jsonl("wake")의 거리를 보고 조정할 것.
+DEFAULT_THRESHOLD = 0.13
 DEFAULT_ONBOARD_COUNT = 4  # decisions.md: "3~4회 녹음"
 DEFAULT_SAMPLE_DIR = Path("models/wakeword")
 VOICE_SETTINGS_PATH = Path(".claude/voice-settings.json")
