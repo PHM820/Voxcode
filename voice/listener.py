@@ -599,7 +599,8 @@ class MicLoop:
         if not self._wake_detector.is_onboarded():
             print(
                 f"[mic-loop] 호출어 '{self._wake_detector.wake_word}' 온보딩이 안 돼 "
-                f"있어 마이크 루프를 시작하지 않습니다. wakeword.onboard()를 먼저 실행하세요.",
+                f"있어 마이크 루프를 시작하지 않습니다. 프로젝트 루트에서 "
+                f"'.venv\\Scripts\\python.exe -m voice.wakeword onboard'를 먼저 실행하세요.",
                 file=sys.stderr,
             )
             return

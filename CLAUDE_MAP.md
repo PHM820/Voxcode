@@ -26,7 +26,7 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
   - 목록·다시 말해줘·조용히·상황 묻기는 `_listener_reply`가 세션에 안 보내고 읽어 준다. 조용히 모드는 `ListenerContext.quiet` → `should_speak_notice`(지금은 훅 종류 기준).
   - 서브 관리자(`voice/manager.py`, `ask`·`launch`·`stop`)는 Jev가 애매할 때만 부른다. 주고받기는 `~/.voxcode/manager/questions·answers/` 파일 — 관리자에 주입하는 건 id 한 줄뿐. 관리자 폴더의 훅은 프로젝트로 알리지 않고 `session.json`만 등록한다(`hooks/_common.py`). 테스트는 `ask_manager`를 바꿔 끼운다.
   - 기록이 먼저: `heard`를 쓰고 나서 전달한다. `record`는 예외를 밖으로 내지 않는다(마이크 스레드 보호). 테스트는 `VOXCODE_HOME`으로 폴더를 바꾼다.
-  - 호출어 온보딩(`models/wakeword/<호출어>/*.wav`)이 없으면 마이크 루프는 로그만 남기고 끝난다(음성 요약은 계속 동작).
+  - 호출어 온보딩(`models/wakeword/<호출어>/*.wav`)이 없으면 마이크 루프는 로그만 남기고 끝난다(음성 요약은 계속 동작). 녹음 파일은 git에 없으니 새로 받은 사람은 `python -m voice.wakeword onboard`를 본인 터미널에서 한 번 실행해야 한다(사람이 신호에 맞춰 말해야 하므로 Claude가 대신 실행하지 않음).
 
 ## TTS·STT 엔진과 언어
 - 시작점: `voice/tts.py`(`TtsEngine`), `voice/stt.py`(`SttEngine`), `voice/languages.py`(`LANGUAGES`, `VoiceOption`), `.claude/download_tts_model.py`.

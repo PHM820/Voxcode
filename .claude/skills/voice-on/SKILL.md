@@ -66,6 +66,14 @@ description: 음성모드(완료 음성 요약 + 음성 명령)를 켠다. 전�
      `onboarded: true`로 기록한다.
    - 확정 문구를 TTS로 한 번 들려주는 건 이번 온보딩 범위 밖(리스너가 아직 안 떠 있는
      시점) — 텍스트로 "OK, {언어} {목소리}로 설정했습니다"만 보고한다.
+5. **호출어 녹음 확인** (`onboarded`와 별개로 매번 확인 — 녹음 파일은 저장소에 없어서 새로 받은 사람은
+   늘 비어 있다): `.venv\Scripts\python.exe -c "from voice.wakeword import WakeWordDetector as W; print(W().is_onboarded())"`
+   가 `False`면, 사용자에게 **본인 터미널에서** 아래를 실행하라고 안내한다(사람이 신호에 맞춰 말해야 해서
+   Claude가 대신 실행하지 않는다). 녹음 전에는 완료 음성 요약만 되고 음성 명령은 시작되지 않는다고 덧붙인다.
+   ```
+   .venv\Scripts\python.exe -m voice.wakeword onboard
+   ```
+   호출어 기본값은 "자비스"(4번 녹음, 한 번에 2초). 다른 호출어를 쓰려면 명령 끝에 붙인다.
 
 ## 확인해야 할 것
 

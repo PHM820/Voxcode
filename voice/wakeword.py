@@ -76,9 +76,9 @@ def onboard(wake_word: Optional[str] = None, count: int = DEFAULT_ONBOARD_COUNT,
 
     for i in range(1, count + 1):
         out_path = out_dir / f"sample_{i}.wav"
-        logger.info("[onboard] %d/%d 녹음 중 (%s, %d초)...", i, count, word, duration)
+        input(f"[{i}/{count}] Enter를 누르고 바로 '{word}'라고 말하세요 ({duration}초 녹음)... ")
         lwake.record(str(out_path), duration=duration, trim_silence=True)
-        logger.info("[onboard] 저장: %s", out_path)
+        print(f"  저장: {out_path}")
 
     return out_dir
 
@@ -154,5 +154,12 @@ def _manual_import_check():
 
 
 if __name__ == "__main__":
+    import sys
+
     logging.basicConfig(level=logging.INFO)
-    _manual_import_check()
+    if sys.argv[1:2] == ["onboard"]:
+        # 사람이 직접 터미널에서 실행한다: python -m voice.wakeword onboard [호출어]
+        folder = onboard(sys.argv[2] if len(sys.argv) > 2 else None)
+        print(f"호출어 녹음 완료: {folder}")
+    else:
+        _manual_import_check()

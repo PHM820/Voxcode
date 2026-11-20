@@ -50,6 +50,16 @@ setup.cmd
 .claude\verify.cmd
 ```
 
+음성 명령을 쓰려면 호출어("자비스")를 본인 목소리로 한 번 녹음해야 합니다(4번, 한 번에 2초).
+프로젝트 루트의 터미널에서 실행하고, 안내가 나올 때마다 Enter를 누른 뒤 말하면 됩니다.
+녹음 전에도 완료 음성 요약은 동작합니다.
+
+```
+.venv\Scripts\python.exe -m voice.wakeword onboard
+```
+
+그다음 Claude Code에서 `/voice-on`으로 켭니다(처음이면 언어·목소리를 고릅니다).
+
 ### 선택: 음성 명령 판단 (Jev)
 
 TypeSafe의 판단 모델 Jev API 키를 프로젝트 루트 `.env`에 넣으면, 받아쓴 문장마다 "무슨 명령인지"

@@ -79,6 +79,6 @@ if exist "%STT_MODEL_DIR%\ggml-base.bin" (
 echo.
 echo SETUP OK
 echo Next: run .claude\verify.cmd to confirm everything imports correctly.
-echo Wake-word onboarding and voice/vad.py, voice/wakeword.py, voice/stt.py are not
-echo built yet - see docs/architecture.md ("Implementation status" section) for scope.
+echo Then run /voice-on in Claude Code. For voice commands, record the wake word once:
+echo   .venv\Scripts\python.exe -m voice.wakeword onboard
 exit /b 0
