@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
-"""받아쓴 문장이 whisper 환각인지 판정 (known-issues.md 15번 완화책).
+"""받아쓴 음성 명령의 "명령 종류"와 "대상 세션"을 Jev 호출 한 번으로 판단.
 
-whisper는 무음·잡음에서도 "[두 번째]", "시청해 주셔서 감사합니다." 같은 문장을
-지어낸다. 그대로 라우팅되면 엉뚱한 텍스트가 세션에 주입되므로, STT 직후·라우팅
-직전에 한 번 거른다. docs/architecture.md "받아쓰기 환각 필터" 절 참고.
+docs/architecture.md "다음 설계: 판단 3단계" 절의 1·2단계(규칙 → Jev)다.
+  1. 규칙: 문장 전체가 괄호 표기("(음악)", "[두 번째]")거나 비어 있으면 잡음(noise).
+  2. Jev(TypeSafe 판단 모델): 키가 있을 때만. 질문 두 개(command, target)를 한 요청에.
+     키가 없거나 오류·타임아웃·형식 이상이면 None — 호출부(listener.route_and_send)가
+     규칙(방금 알림 온 세션)으로 돌아간다. 확신도 기준선(CONFIDENCE_THRESHOLD) 적용도 호출부 몫.
 
-판정 순서(최소성 사다리):
-  1. 규칙: 문장 전체가 괄호로 감싸인 표기("(음악)", "[두 번째]")면 바로 환각.
-  2. Jev(TypeSafe 판단 모델): 키가 있을 때만. 환각 확률을 noul로 받는다.
-     키가 없거나 오류·타임아웃이면 None — 호출부는 "판정 못 함 = 통과"로 처리한다.
-
-주의: 키가 설정돼 있으면 받아쓴 문장이 TypeSafe(미국) 서버로 전송된다(README 참고).
-이 모듈은 마이크 스레드에서 불리므로 어떤 예외도 밖으로 내보내지 않는다 — 여기서
-예외가 새면 MicLoop._run_safe까지 올라가 마이크 루프가 통째로 죽는다.
+주의: 키가 설정돼 있으면 받아쓴 문장과 열린 프로젝트 이름·마지막 요약이 TypeSafe(미국)
+서버로 전송된다(README 참고). 소켓 경로·토큰·세션 key는 보내지 않는다 — 대상 옵션은 s1, s2…로
+바꿔 보내고 답을 받은 뒤 되돌린다.
+이 모듈은 마이크 스레드에서 불리므로 어떤 예외도 밖으로 내보내지 않는다.
 """
 from __future__ import annotations
 
@@ -20,30 +18,57 @@ import json
 import os
 import re
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-1.13.0"  # 별칭(jev-latest)은 코드 변경 없이 답이 바뀔 수 있어 버전 고정
 JEV_TIMEOUT_S = 3.0
 ENV_FILE = Path(".env")
 
-# 이 이상이면 환각으로 보고 버린다. 2026-11-20 실호출 14건(합성 문장)에서 환각
-# 0.58~0.80, 실제 발화 0.05~0.31로 갈림 — 실제 마이크 로그가 쌓이면 다시 조정.
-HALLUCINATION_THRESHOLD = 0.5
+# 판단을 그대로 실행할 확신도 기준선. 처음 0.8, 실사용 로그(log.jsonl)로 조정.
+CONFIDENCE_THRESHOLD = 0.8
+
+COMMANDS = ("instruct", "stop", "stop_all", "resume", "cancel", "noise")
+TARGET_ALL = "all"
+TARGET_LISTENER = "listener"
+TARGET_UNKNOWN = "unknown"
+
+SUMMARY_MAX_CHARS = 300
 
 _BRACKETED = re.compile(r"\s*[\[\(（【].*[\]\)）】]\s*")
 
-_QUESTION = {
-    "halluc": {
-        "type": "noul",
-        "instructions": (
-            "whisper 같은 음성인식 모델은 무음이나 잡음만 들어와도 그럴듯한 문장을 지어낸다(환각). "
-            "예: 대괄호·괄호 표기, 영상 자막 끝인사, 맥락 없이 잘린 조각. 아래 '받아쓴 문장'이 그런 "
-            "환각일 확률을 답하라. 사람이 한 짧은 대답(응, 고고, 1번, 고쳐)은 환각이 아니다."
-        ),
-    }
+_COMMAND_OPTIONS = {
+    "instruct": "프로젝트에 시키는 작업 지시나 대답(기본). 예: '키워드 추가해', '응', '1번', '고쳐'",
+    "stop": "특정 프로젝트 하나를 멈추라는 말. 예: '번개장터 멈춰', '그거 그만해'",
+    "stop_all": "모든 작업을 멈추라는 말. 예: '전부 멈춰', '다 그만'",
+    "resume": "멈췄던 프로젝트를 다시 하라는 말. 예: '번개장터 계속해', '다시 시작해'",
+    "cancel": "방금 한 말을 취소. 예: '아니야 취소', '방금 거 무시해'",
+    "noise": (
+        "음성인식이 무음·잡음에서 지어낸 문장이나 의미 없는 조각. 예: '시청해 주셔서 감사합니다.' "
+        "사람이 한 짧은 대답(응, 고고, 1번, 고쳐)은 noise가 아니라 instruct"
+    ),
 }
+
+_TARGET_INSTRUCTIONS = (
+    "이 음성 명령이 어느 프로젝트를 향한 말인지 고르라. 프로젝트 이름은 영어 폴더명이고 사용자는 "
+    "한국어로 부르므로 뜻·발음·마지막 요약 내용으로 연결하라. 모든 프로젝트를 향하면 all, "
+    "특정 프로젝트가 아니라 음성 비서 자신에게 하는 말이면 listener, 문장에 어느 프로젝트인지 "
+    "단서가 없으면 unknown."
+)
+
+
+@dataclass(frozen=True)
+class Decision:
+    command: str        # COMMANDS 중 하나
+    command_conf: float
+    target: str         # 세션 key, 또는 TARGET_ALL / TARGET_LISTENER / TARGET_UNKNOWN
+    target_conf: float
+    source: str         # "rule" | "jev"
+
+
+AskFn = Callable[[dict, str], dict]
 
 
 def _load_key() -> Optional[str]:
@@ -60,8 +85,7 @@ def _load_key() -> Optional[str]:
     return None
 
 
-def _ask_jev(text: str, key: str) -> Optional[float]:
-    payload = {"model": JEV_MODEL, "state": f"받아쓴 문장: {text}", "questions": _QUESTION}
+def _ask_jev(payload: dict, key: str) -> dict:
     req = urllib.request.Request(
         JEV_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -69,22 +93,75 @@ def _ask_jev(text: str, key: str) -> Optional[float]:
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=JEV_TIMEOUT_S) as r:
-        answers = json.loads(r.read().decode("utf-8")).get("answers", {})
-    return float(answers["halluc"]["noul"])
+        return json.loads(r.read().decode("utf-8")).get("answers", {})
 
 
-def hallucination_score(text: str) -> Optional[float]:
-    """환각 확률(0~1)을 반환. 판정할 수 없으면 None."""
+def build_payload(text: str, sessions: list[dict]) -> tuple[dict, dict[str, str]]:
+    """Jev 요청 본문과 (옵션명 → 세션 key) 표를 만든다. 외부로 나가는 내용은 여기서만 정한다."""
+    alias: dict[str, str] = {}
+    target_options: dict[str, str] = {}
+    lines = [f"받아쓴 문장: {text}", "열린 프로젝트:"]
+    for i, s in enumerate(sessions, start=1):
+        name = f"s{i}"
+        alias[name] = s["key"]
+        paused = " (멈춤 상태)" if s.get("paused") else ""
+        summary = (s.get("summary") or "").strip()[:SUMMARY_MAX_CHARS]
+        target_options[name] = f"{s['project']} 프로젝트{paused}. 마지막 요약: {summary or '없음'}"
+        lines.append(f"- {name}: {s['project']}{paused} / 마지막 요약: {summary or '없음'}")
+    if not sessions:
+        lines.append("- (없음)")
+    target_options[TARGET_ALL] = "열린 모든 프로젝트"
+    target_options[TARGET_LISTENER] = "특정 프로젝트가 아니라 음성 비서 자신"
+    target_options[TARGET_UNKNOWN] = "어느 프로젝트인지 알 수 없음"
+
+    payload = {
+        "model": JEV_MODEL,
+        "state": "\n".join(lines),
+        "questions": {
+            "command": {
+                "type": "choice",
+                "instructions": "사용자가 음성으로 한 이 말이 어떤 명령인지 고르라.",
+                "criteria": dict(_COMMAND_OPTIONS),
+            },
+            "target": {
+                "type": "choice",
+                "instructions": _TARGET_INSTRUCTIONS,
+                "criteria": target_options,
+            },
+        },
+    }
+    return payload, alias
+
+
+def _choice_and_conf(answer: dict, allowed) -> tuple[str, float]:
+    choice = answer["choice"]
+    if choice not in allowed:
+        raise ValueError(f"옵션 밖 답: {choice!r}")
+    conf = answer.get("confidence")
+    if not isinstance(conf, (int, float)):
+        probs = answer.get("probabilities")
+        if not isinstance(probs, dict) or not probs:
+            raise ValueError("확신도 없음")
+        conf = max(float(v) for v in probs.values())
+    return choice, float(conf)
+
+
+def judge(text: str, sessions: list[dict], ask: Optional[AskFn] = None) -> Optional[Decision]:
+    """sessions 각 항목: {"key", "project", "summary", "paused"}. 판단 못 하면 None.
+
+    ask는 테스트에서 네트워크 없이 바꿔 끼우는 용도: ask(payload, key) -> answers dict.
+    """
     try:
-        if _BRACKETED.fullmatch(text):
-            return 1.0
+        if not text.strip() or _BRACKETED.fullmatch(text):
+            return Decision("noise", 1.0, TARGET_UNKNOWN, 1.0, "rule")
         key = _load_key()
         if not key:
             return None
-        return _ask_jev(text, key)
-    except Exception:  # noqa: BLE001 - fail-open: 판정 실패가 받아쓰기를 막으면 안 됨
+        payload, alias = build_payload(text, sessions)
+        answers = (ask or _ask_jev)(payload, key)
+        command, command_conf = _choice_and_conf(answers["command"], COMMANDS)
+        target_allowed = set(alias) | {TARGET_ALL, TARGET_LISTENER, TARGET_UNKNOWN}
+        target, target_conf = _choice_and_conf(answers["target"], target_allowed)
+        return Decision(command, command_conf, alias.get(target, target), target_conf, "jev")
+    except Exception:  # noqa: BLE001 - 판단 실패는 None(규칙 폴백), 마이크 스레드로 새면 안 됨
         return None
-
-
-def is_hallucination(text: str, score: Optional[float]) -> bool:
-    return score is not None and score >= HALLUCINATION_THRESHOLD

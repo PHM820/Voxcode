@@ -14,15 +14,15 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
   - `.claude/worktrees/` 아래(/delegate 작업자) 세션과 `enabled: false`면 아무것도 보내지 않는다.
 
 ## 음성 명령 (호출어 → 받아쓰기 → 라우팅 → 주입)
-- 개요: 리스너 안의 `MicLoop` 스레드가 마이크를 계속 열고, "자비스"를 감지하면 비프 → 녹음(VAD로 끝 감지) → whisper 받아쓰기 → 세션 선택 → `voice/inject.js`로 그 세션에 사용자 메시지로 넣는다. TTS 재생 중 말을 시작하면 호출어 없이 바로 받아쓰기(바지-인).
-- 시작점: `voice/listener.py`(`MicLoop`, `_dictation_cycle`, `route_command`, `route_and_send`, `parse_stop_command`), `voice/wakeword.py`, `voice/vad.py`, `voice/stt.py`, `voice/inject.js`.
+- 개요: 리스너 안의 `MicLoop` 스레드가 마이크를 계속 열고, "자비스"를 감지하면 비프 → 녹음(VAD로 끝 감지) → whisper 받아쓰기 → `~/.voxcode/log.jsonl`에 먼저 기록 → 판단(규칙·Jev)으로 명령과 대상 결정 → `voice/inject.js`로 그 세션에 사용자 메시지로 넣는다.
+- 시작점: `voice/listener.py`(`MicLoop`, `_dictation_cycle`, `route_and_send`, `route_command`, `SessionTable`), `voice/judge.py`(`judge`, `Decision`), `voice/record.py`(`log_event`, `write_state`), `voice/wakeword.py`, `voice/vad.py`, `voice/stt.py`, `voice/inject.js`.
 - 함정:
   - `lwake.listen()`은 콜백에서 난 `Exception`을 삼킨다 — 호출어 감지 탈출용 예외는 `BaseException`을 상속해야 한다(known-issues 17).
   - 비프가 0.3초보다 짧으면 이 PC 오디오 드라이버에서 안 들린다.
-  - 라우팅은 규칙만 쓴다(내용 이해 없음): 세션 1개면 그 세션 → 발화가 프로젝트명으로 시작 → 최근 완료 알림 세션 → 최근 명령 세션. "멈춰 {프로젝트}"는 전 세션 브로드캐스트.
-  - `/voice-detach`·`/voice-attach`는 세션이 스스로 라우팅 후보에서 빠지고 돌아오는 장치("멈춰" 뒤 재라우팅 문제). 프로젝트명으로 직접 부르면 detach 상태여도 즉시 복귀.
+  - 판단은 Jev 호출 한 번(명령 + 대상). 확신도 0.8 미만·키 없음·오류면 규칙 폴백: 세션 1개면 그 세션 → 멈추지 않은 세션 중 최근 완료 알림 → 최근 명령. Jev에는 프로젝트명·요약만 보내고 세션 key(소켓 경로)·토큰은 `s1, s2…`로 숨긴다.
+  - "멈춰"는 강제 중단이 아니라 그 세션에 문장을 그대로 전달 + `paused` 표시. 대상이 애매하면(Jev 실패 시 멈춤 단어 포함) 아무것도 안 보내고 삑 두 번. **완료 알림(notify)은 `paused`를 풀지 않는다** — 풀리는 건 다시 시작·그 세션을 직접 지시할 때뿐.
+  - 기록이 먼저: `heard`를 쓰고 나서 전달한다. `record`는 예외를 밖으로 내지 않는다(마이크 스레드 보호). 테스트는 `VOXCODE_HOME`으로 폴더를 바꾼다.
   - 호출어 온보딩(`models/wakeword/<호출어>/*.wav`)이 없으면 마이크 루프는 로그만 남기고 끝난다(음성 요약은 계속 동작).
-  - `voice/judge.py`(Jev 환각 필터)는 코드만 있고 연결은 끊겨 있다 — 다시 쓰려면 `_dictation_cycle`에서 `should_drop_transcript` 호출.
 
 ## TTS·STT 엔진과 언어
 - 시작점: `voice/tts.py`(`TtsEngine`), `voice/stt.py`(`SttEngine`), `voice/languages.py`(`LANGUAGES`, `VoiceOption`), `.claude/download_tts_model.py`.

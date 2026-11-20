@@ -24,7 +24,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo === voice/judge.py hallucination filter checks (no network) ===
+echo === voice/judge.py command judge checks (no network) ===
 "%VENV_PY%" .claude\verify_judge.py
 if errorlevel 1 (
     echo VERIFY FAILED: judge logic

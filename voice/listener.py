@@ -6,15 +6,15 @@ docs/architecture.md에 확정된 것만 구현한다. 아직 미정인 세부(�
 
 이 파일이 실제로 왕복하는 것:
   1. 로컬 TCP 서버(127.0.0.1:8765)로 훅이 보내는 완료 알림 JSON을 수신
-  2. 세션별 상태 테이블에 반영
+  2. 세션별 상태 테이블에 반영 (~/.voxcode/state.json 스냅숏, voice/record.py)
   3. 여러 알림이 겹치면 큐에 쌓아 "{프로젝트명}, {요약}" 형식으로 순차 TTS
-  4. (테스트 함수) 텍스트를 직접 넘겨 세션 라우팅 규칙 ①~④, "멈춰 {프로젝트명}"
-     브로드캐스트 규칙을 검증
-  5. 라우팅 결정된 세션에 voice/inject.js를 subprocess로 호출해 postback
+  4. 받아쓴 문장 처리(route_and_send): log.jsonl에 먼저 기록 → 판단(규칙·Jev,
+     voice/judge.py)으로 명령(지시·멈춰·전체 멈춰·다시 시작·취소·잡음)과 대상 결정
+     → 확신이 낮으면 규칙 폴백("방금 알림 온 세션") → 대상 세션에 전달
+  5. 전달은 voice/inject.js를 subprocess로 호출해 postback
   6. 실시간 마이크 루프(MicLoop): 항상 마이크를 열어 VAD+wakeword로 호출어
-     대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send로
-     라우팅. TTS 재생 중 호출어가 들리면 재생을 끊고 받아쓰기
-     (architecture.md "3. 유휴 상태에서 호출어로 명령")
+     대기 → 감지 시 받아쓰기(비프음 + VAD 종료 감지 + STT) → route_and_send
+     (architecture.md "다음 설계" 절)
 
 MicLoop은 별도 스레드(daemon)에서 돌아 asyncio TCP 서버와 동시에 동작한다
 (작업 지시서 4번 요구사항).
@@ -34,14 +34,18 @@ from typing import Optional
 
 import numpy as np
 
+from voice import record
+
 # ---- 고정값 (이번 구현에서 확정, docs/architecture.md에 반영) ----
 HOST = "127.0.0.1"
-PORT = 8765  # TODO였던 포트 번호를 이 구현에서 8765로 확정 (docs/architecture.md 갱신 필요)
+PORT = 8765
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INJECT_JS = PROJECT_ROOT / "voice" / "inject.js"
 
-STOP_PREFIX = "멈춰"  # known: "멈춰 {프로젝트명}" 형식만 유효, 뒤에 단어 없으면 무시
+# Jev가 판단하지 못했을 때(키 없음·오류·확신 부족) 멈춤 의도로 보는 단어. 이 단어가 있으면
+# 대상이 확실하지 않은 한 아무것도 보내지 않는다 — 엉뚱한 세션에 "멈춰"를 보내지 않기 위해.
+STOP_WORDS = ("멈춰", "멈춰라", "그만", "스톱", "중지")
 
 
 # ---------------------------------------------------------------------------
@@ -50,174 +54,98 @@ STOP_PREFIX = "멈춰"  # known: "멈춰 {프로젝트명}" 형식만 유효, �
 
 @dataclass
 class SessionState:
-    """세션 하나의 레코드. docs/architecture.md "세션 라우팅" 절의 필드 그대로."""
+    """세션 하나의 레코드. state.json의 sessions 항목과 같은 필드."""
 
     session_id: str  # = CLAUDE_CODE_MESSAGING_SOCKET 경로 자체 (별도 uuid 없음)
     project_name: str
     socket_path: str
     token: str
+    last_summary: str = ""
     last_notify_at: float = 0.0
     last_command_at: float = 0.0
-    # "멈춰" 이후 재라우팅 문제의 A안(docs/architecture.md "'멈춰' 이후 재라우팅
-    # 문제와 A안" 절). 세션이 스스로 /voice-detach를 호출하면 False, /voice-attach
-    # 또는 프로젝트명 직접 호출로 다시 True. 테이블에서 삭제하지 않고 플래그만
-    # 바꾸는 이유: 규칙 ①(프로젝트명 직접 호출)이 active 무관하게 항상 즉시
-    # 재활성화할 수 있어야 하기 때문 — 삭제하면 그 즉시 재활성화가 불가능해진다.
-    active: bool = True
+    # "멈춰"를 받은 세션. 다시 시작하거나 사용자가 그 세션을 직접 부를 때까지 규칙 폴백의
+    # 기본 대상에서 빠진다. 완료 알림(notify)으로는 풀리지 않는다 — 멈춘 세션이 정리하며
+    # 보낸 완료 알림이 다시 기본 대상으로 만들면 안 되기 때문.
+    paused: bool = False
 
 
 class SessionTable:
-    """세션별 상태를 관리하는 dict 래퍼. 상주 프로세스 안에서 하나만 존재."""
+    """세션별 상태를 관리하는 dict 래퍼. 상주 프로세스 안에서 하나만 존재.
+    바뀔 때마다 ~/.voxcode/state.json에 스냅숏을 쓴다."""
 
     def __init__(self):
         self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
 
-    def upsert_from_notify(self, session_id: str, project_name: str,
-                            socket_path: str, token: str) -> SessionState:
-        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성)하고 last_notify_at 찍기.
+    def _save(self) -> None:
+        record.write_state(self.all_sessions())
 
-        기존에 detach된 세션이라도 실제로 완료 알림을 다시 보냈다는 건 사용자가
-        그 프로젝트에 새로 뭔가를 시켰다는 뜻이므로 active를 True로 되돌린다
-        ("'멈춰' 이후 재라우팅 문제와 A안" 절의 "해제 조건" 참고).
-        """
+    def upsert_from_notify(self, session_id: str, project_name: str,
+                            socket_path: str, token: str, summary: str = "") -> SessionState:
+        """완료 알림 수신 시 세션 레코드를 갱신(없으면 생성). paused는 건드리지 않는다."""
         with self._lock:
             st = self._sessions.get(session_id)
             if st is None:
-                st = SessionState(
-                    session_id=session_id,
-                    project_name=project_name,
-                    socket_path=socket_path,
-                    token=token,
-                )
+                st = SessionState(session_id, project_name, socket_path, token)
                 self._sessions[session_id] = st
             else:
                 # 프로젝트명/소켓/토큰은 최신 값으로 갱신 (재시작 등으로 바뀔 수 있음)
                 st.project_name = project_name
                 st.socket_path = socket_path
                 st.token = token
+            if summary:
+                st.last_summary = summary
             st.last_notify_at = time.time()
-            st.active = True
-            return st
+        self._save()
+        return st
 
     def mark_command_sent(self, session_id: str) -> None:
         with self._lock:
             st = self._sessions.get(session_id)
             if st is not None:
                 st.last_command_at = time.time()
+        self._save()
 
-    def mark_detached(self, session_id: str) -> bool:
-        """/voice-detach: 세션이 스스로 라우팅 후보에서 빠짐. 찾았으면 True."""
+    def set_paused(self, session_id: str, paused: bool) -> None:
         with self._lock:
             st = self._sessions.get(session_id)
-            if st is None:
-                return False
-            st.active = False
-            return True
+            if st is not None:
+                st.paused = paused
+        self._save()
 
-    def mark_attached(self, session_id: str, project_name: str,
-                       socket_path: str, token: str) -> SessionState:
-        """/voice-attach: notify와 동일 로직(재사용) — 세션 정보를 갱신하고
-        active=True로 되돌린다. 별도 이벤트지만 upsert 의미가 같아 위임한다."""
-        return self.upsert_from_notify(session_id, project_name, socket_path, token)
+    def get(self, session_id: str) -> Optional[SessionState]:
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def all_sessions(self) -> list[SessionState]:
         with self._lock:
             return list(self._sessions.values())
 
-    def find_by_project_prefix(self, spoken_text: str) -> Optional[SessionState]:
-        """발화가 프로젝트명으로 '시작'하면 그 세션 반환 (라우팅 규칙 ①).
-
-        active 무관하게 항상 찾고, 찾으면 그 즉시 재활성화한다 — "프로젝트명을
-        직접 부르면 언제든 즉시 부활"이 사용자 재량 원칙과 일치("'멈춰' 이후
-        재라우팅 문제와 A안" 절).
-        """
-        with self._lock:
-            for st in self._sessions.values():
-                if spoken_text.startswith(st.project_name):
-                    st.active = True
-                    return st
-        return None
-
-    def most_recent_by_notify(self) -> Optional[SessionState]:
-        """규칙 ②: active인 세션만 후보로 삼는다 — detach된 세션은 제외
-        ("'멈춰' 이후 재라우팅 문제와 A안" 절)."""
-        sessions = [s for s in self.all_sessions() if s.active]
-        if not sessions:
-            return None
-        return max(sessions, key=lambda s: s.last_notify_at)
-
-    def most_recent_by_command(self) -> Optional[SessionState]:
-        """규칙 ③도 ②와 같은 원칙 — detach된 세션은 후보에서 제외."""
-        sessions = self.all_sessions()
-        if not sessions:
-            return None
-        candidates = [s for s in sessions if s.last_command_at > 0 and s.active]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda s: s.last_command_at)
-
 
 # ---------------------------------------------------------------------------
-# 세션 라우팅 (docs/architecture.md "세션 라우팅" 절, 기계적 규칙만 사용)
+# 규칙 폴백 (Jev가 판단 못 했을 때)
 # ---------------------------------------------------------------------------
 
-def route_command(table: SessionTable, spoken_text: str) -> Optional[SessionState]:
-    """일반 음성 명령을 어느 세션으로 보낼지 결정한다. LLM 판단 없이 규칙만.
+def route_command(table: SessionTable) -> Optional[SessionState]:
+    """규칙만으로 기본 대상을 고른다.
 
-    우선순위:
-      ④ 세션이 하나뿐이면 무조건 그 세션 (먼저 체크하는 게 더 빠르고 규칙과 동치.
-         detach 상태와 무관 — 세션이 하나뿐이면 "잘못된 세션으로 갈 위험" 자체가
-         없으므로 active 필터를 적용할 이유가 없다)
-      ① 발화가 프로젝트명으로 시작하면 그 세션 (active 무관, 즉시 재활성화)
-      ② 없으면 last_notify_at이 가장 최근인 active 세션
-      ③ 알림이 전혀 없었으면(모든 세션 last_notify_at==0) last_command_at 최신 active 세션
+      ① 세션이 하나뿐이면 그 세션 (멈춤이어도 — 잘못 갈 다른 세션이 없다)
+      ② 멈추지 않은 세션 중 last_notify_at이 가장 최근인 세션 ("방금 알림 온 세션")
+      ③ 알림이 전혀 없었으면 멈추지 않은 세션 중 last_command_at이 가장 최근인 세션
     """
     sessions = table.all_sessions()
-    if not sessions:
-        return None
     if len(sessions) == 1:
         return sessions[0]
-
-    hit = table.find_by_project_prefix(spoken_text)
-    if hit is not None:
-        return hit
-
-    most_notified = table.most_recent_by_notify()
-    if most_notified is not None and most_notified.last_notify_at > 0:
-        return most_notified
-
-    return table.most_recent_by_command()
+    live = [s for s in sessions if not s.paused]
+    for attr in ("last_notify_at", "last_command_at"):
+        candidates = [s for s in live if getattr(s, attr) > 0]
+        if candidates:
+            return max(candidates, key=lambda s: getattr(s, attr))
+    return None
 
 
-def parse_stop_command(spoken_text: str) -> Optional[str]:
-    """"멈춰 {프로젝트명}" 형식이면 프로젝트명을, 아니면 None을 반환.
-
-    형식 검사만 한다 (의미 이해 불필요 원칙, docs/architecture.md 5번 참고).
-    """
-    text = spoken_text.strip()
-    if not text.startswith(STOP_PREFIX):
-        return None
-    rest = text[len(STOP_PREFIX):].strip()
-    if not rest:
-        return None  # "멈춰"만 있고 프로젝트명 없음 -> 무시
-    # 첫 단어(공백 기준)를 프로젝트명으로 취급
-    project_name = rest.split()[0]
-    return project_name
-
-
-def should_drop_transcript(spoken_text: str, judge=None) -> tuple[bool, Optional[float]]:
-    """받아쓴 문장을 whisper 환각으로 보고 버릴지 판정 (voice/judge.py).
-
-    "멈춰"로 시작하면 판정 없이 통과 — 이 필터가 낼 수 있는 가장 나쁜 실패가
-    중단 명령을 버리는 것이라, 규칙으로 잡히는 제어 명령은 판단 모델에 맡기지 않는다.
-    판정 못 함(None)은 통과(기존 동작 유지). judge는 테스트에서 네트워크 없이 바꿔 끼우는 용도.
-    """
-    if spoken_text.strip().startswith(STOP_PREFIX):
-        return False, None
-    from voice.judge import hallucination_score, is_hallucination
-    score = (judge or hallucination_score)(spoken_text)
-    return is_hallucination(spoken_text, score), score
+def _has_stop_word(text: str) -> bool:
+    return any(w in text for w in STOP_WORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -229,11 +157,7 @@ def send_postback(session: SessionState, text: str) -> subprocess.CompletedProce
 
     inject.js는 CLAUDE_CODE_MESSAGING_SOCKET / CLAUDE_CODE_MESSAGING_TOKEN
     환경변수를 읽으므로, 대상 세션의 값을 해당 프로세스의 env로 넘긴다.
-
-    주의: 실제 postback이 성공하려면 진짜 Claude Code 세션이 그 소켓을 열고
-    있어야 한다. 가짜 세션(테스트용 socket_path/token)으로 호출하면
-    inject.js가 연결 실패로 종료한다 — 이 함수는 "subprocess 호출까지"를
-    검증하는 것이고, 실제 세션 환경에서 재검증이 필요하다.
+    실제 postback이 성공하려면 진짜 Claude Code 세션이 그 소켓을 열고 있어야 한다.
     """
     import os
 
@@ -241,7 +165,7 @@ def send_postback(session: SessionState, text: str) -> subprocess.CompletedProce
     env["CLAUDE_CODE_MESSAGING_SOCKET"] = session.socket_path
     env["CLAUDE_CODE_MESSAGING_TOKEN"] = session.token
 
-    result = subprocess.run(
+    return subprocess.run(
         ["node", str(INJECT_JS), text],
         env=env,
         capture_output=True,
@@ -249,79 +173,115 @@ def send_postback(session: SessionState, text: str) -> subprocess.CompletedProce
         errors="replace",
         timeout=10,
     )
-    return result
 
 
-def route_and_send(table: SessionTable, spoken_text: str) -> dict:
-    """테스트/실사용 공통 진입점: 텍스트 -> 라우팅 -> postback.
+# ---------------------------------------------------------------------------
+# 받아쓴 문장 처리: 기록 → 판단(규칙·Jev) → 전달
+# ---------------------------------------------------------------------------
 
-    STT가 아직 없는 최소 버전이므로, 실시간 마이크 대신 이 함수에 텍스트를
-    직접 넘겨서 라우팅 로직을 검증한다 (작업 지시서 6번 요구사항).
+def _deliver(table: SessionTable, targets: list[SessionState], text: str, send) -> list[dict]:
+    results = []
+    for st in targets:
+        try:
+            proc = send(st, text)
+            ok = proc.returncode == 0
+            detail = (proc.stderr or "").strip()[-300:]
+        except Exception as e:  # noqa: BLE001 - 한 세션 실패가 나머지 전달을 막으면 안 됨
+            ok, detail = False, str(e)
+        table.mark_command_sent(st.session_id)
+        results.append({"project_name": st.project_name, "ok": ok, "detail": detail})
+    record.log_event("sent", text=text, results=results)
+    return results
 
-    반환값은 테스트에서 눈으로 확인하기 쉽게 dict로: 무슨 경로를 탔는지,
-    누구에게 보냈는지, postback 결과가 어땠는지.
+
+def route_and_send(table: SessionTable, text: str, judge_fn=None, send=None) -> dict:
+    """받아쓴 문장 하나를 처리한다 (docs/architecture.md "다음 설계" 1단계).
+
+    judge_fn·send는 테스트에서 네트워크·node 없이 바꿔 끼우는 용도.
+    반환: {"mode", "beep_twice", "targets"(보낸 프로젝트명), "results", "decision"}.
     """
-    stop_project = parse_stop_command(spoken_text)
-    if stop_project is not None:
-        # 제어 명령: 라우팅 판단 없이 전 세션 브로드캐스트
-        targets = table.all_sessions()
-        results = []
-        for st in targets:
-            try:
-                proc = send_postback(st, spoken_text)
-                results.append({
-                    "session_id": st.session_id,
-                    "project_name": st.project_name,
-                    "postback_ok": proc.returncode == 0,
-                    "stdout": proc.stdout.strip(),
-                    "stderr": proc.stderr.strip(),
-                })
-            except Exception as e:  # noqa: BLE001 - 테스트 가시성 위해 넓게 잡음
-                results.append({
-                    "session_id": st.session_id,
-                    "project_name": st.project_name,
-                    "postback_ok": False,
-                    "error": str(e),
-                })
-            table.mark_command_sent(st.session_id)
-        return {
-            "mode": "broadcast_stop",
-            "stop_project_token": stop_project,
-            "targets": results,
-        }
+    from voice import judge as judge_mod
 
-    # "멈춰"로 시작하지만 프로젝트명이 없는 경우도 parse_stop_command가 None을
-    # 반환하므로 여기로 떨어져 일반 라우팅을 타지 않도록 별도 체크가 필요하다.
-    if spoken_text.strip().startswith(STOP_PREFIX):
-        return {"mode": "stop_ignored_no_project", "text": spoken_text}
+    judge_fn = judge_fn or judge_mod.judge
+    send = send or send_postback
 
-    target = route_command(table, spoken_text)
-    if target is None:
-        return {"mode": "route", "target": None, "reason": "활성 세션 없음"}
+    record.log_event("heard", text=text)  # 기록이 항상 먼저
 
+    sessions = table.all_sessions()
     try:
-        proc = send_postback(target, spoken_text)
-        table.mark_command_sent(target.session_id)
-        return {
-            "mode": "route",
-            "target": {
-                "session_id": target.session_id,
-                "project_name": target.project_name,
-            },
-            "postback_ok": proc.returncode == 0,
-            "stdout": proc.stdout.strip(),
-            "stderr": proc.stderr.strip(),
-        }
-    except Exception as e:  # noqa: BLE001
-        return {
-            "mode": "route",
-            "target": {
-                "session_id": target.session_id,
-                "project_name": target.project_name,
-            },
-            "postback_ok": False,
-            "error": str(e),
-        }
+        d = judge_fn(text, [
+            {"key": s.session_id, "project": s.project_name,
+             "summary": s.last_summary, "paused": s.paused}
+            for s in sessions
+        ])
+    except Exception:  # noqa: BLE001
+        d = None
+
+    threshold = judge_mod.CONFIDENCE_THRESHOLD
+    ok_cmd = d is not None and d.command_conf >= threshold
+    ok_target = d is not None and d.target_conf >= threshold
+
+    def target_session() -> Optional[SessionState]:
+        """세션 하나를 향한 명령의 대상. 세션이 하나뿐이면 규칙으로 확정."""
+        if len(sessions) == 1:
+            return sessions[0]
+        if ok_target:
+            return table.get(d.target)
+        return None
+
+    mode, targets, reason = "", [], ""
+    pause_after: Optional[bool] = None
+
+    if not ok_cmd:
+        reason = "판단 불가" if d is None else f"명령 확신 부족({d.command_conf:.2f})"
+        if _has_stop_word(text):
+            only = sessions[0] if len(sessions) == 1 else None
+            mode, targets, pause_after = ("stop", [only], True) if only else ("stop_ambiguous", [], None)
+        else:
+            fb = route_command(table)
+            mode, targets = ("fallback", [fb]) if fb else ("no_target", [])
+    elif d.command in ("noise", "cancel"):
+        mode = "dropped"
+    elif d.command == "instruct":
+        st = target_session() or route_command(table)
+        mode, targets = ("instruct", [st]) if st else ("no_target", [])
+        if st is not None and st.paused and (ok_target or len(sessions) == 1):
+            pause_after = False  # 사용자가 그 세션을 직접 불렀다
+    elif d.command == "stop_all" or (d.command == "stop" and ok_target and d.target == judge_mod.TARGET_ALL):
+        mode, targets, pause_after = "stop_all", list(sessions), True
+    elif d.command == "stop":
+        st = target_session()
+        mode, targets, pause_after = ("stop", [st], True) if st else ("stop_ambiguous", [], None)
+    elif d.command == "resume":
+        st = target_session()
+        if st is None:
+            paused = [s for s in sessions if s.paused]
+            st = paused[0] if len(paused) == 1 else None
+        mode, targets, pause_after = ("resume", [st], False) if st else ("resume_ambiguous", [], None)
+    else:  # judge가 COMMANDS 밖 값을 줄 일은 없지만 안전하게
+        mode = "dropped"
+
+    record.log_event(
+        "decision", text=text, mode=mode,
+        command=d.command if d else None, target=[t.project_name for t in targets],
+        command_conf=d.command_conf if d else None, target_conf=d.target_conf if d else None,
+        source=(d.source if ok_cmd else "fallback") if d else "fallback", reason=reason,
+    )
+
+    if mode == "dropped":
+        record.log_event("dropped", text=text, reason=d.command)
+    if pause_after is not None:
+        for st in targets:
+            table.set_paused(st.session_id, pause_after)
+    results = _deliver(table, targets, text, send) if targets else []
+
+    return {
+        "mode": mode,
+        "beep_twice": not targets,
+        "targets": [t.project_name for t in targets],
+        "results": results,
+        "decision": d,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -580,12 +540,13 @@ class MicLoop:
             print("[mic-loop] 빈 인식 결과, 라우팅 생략")
             return
 
-        # 환각 필터(should_drop_transcript, voice/judge.py)는 연결 해제 상태(2026-11-20) —
-        # 실제 사용에서 환각이 문제로 확인되면 여기서 다시 호출한다.
-
         result = route_and_send(self.table, text)
         self.last_route_result = result
-        print(f"[mic-loop] 라우팅 결과: {result}")
+        print(f"[mic-loop] 처리 결과: mode={result['mode']} targets={result['targets']}")
+        if result["beep_twice"]:  # 버림·대상 애매 — 아무 데도 안 보냈다는 신호
+            play_beep_blocking(BEEP_LOW_HZ)
+            time.sleep(0.12)
+            play_beep_blocking(BEEP_LOW_HZ)
 
 
 # ---------------------------------------------------------------------------
@@ -594,12 +555,10 @@ class MicLoop:
 
 # 메시지 스키마 (이번 구현에서 확정, docs/architecture.md 반영 필요):
 # {
-#   "event": "notify" | "command" | "detach" | "attach" | "shutdown",
-#     # notify=완료 알림, command=음성 명령(테스트 경로에서는 안 씀),
-#     # detach/attach=/voice-detach·/voice-attach 스킬이 보내는 자기 상태 관리
-#     # 이벤트("'멈춰' 이후 재라우팅 문제와 A안" 절)
+#   "event": "notify" | "shutdown",
+#     # notify=완료 알림(text가 요약), shutdown=/voice-off 종료 신호
 #   "session_id": "<CLAUDE_CODE_MESSAGING_SOCKET 경로>",
-#   "project_name": "<cwd 폴더명>",  # attach에는 필요, detach는 session_id만 있으면 충분
+#   "project_name": "<cwd 폴더명>",
 #   "text": "<요약 또는 명령 텍스트>",
 #   "socket_path": "<대상 세션의 CLAUDE_CODE_MESSAGING_SOCKET>",
 #   "token": "<대상 세션의 CLAUDE_CODE_MESSAGING_TOKEN>"
@@ -645,24 +604,10 @@ class ListenerServer:
                 return
 
             if event == "notify":
-                self.table.upsert_from_notify(session_id, project_name, socket_path, token)
+                record.log_event("notify", project_name=project_name, summary=text)
+                # 멈춘 세션의 완료 알림도 요약은 갱신하지만 멈춤은 풀지 않는다
+                self.table.upsert_from_notify(session_id, project_name, socket_path, token, summary=text)
                 self.tts_queue.enqueue(project_name, text)
-                writer.write(json.dumps({"ok": True}).encode())
-            elif event == "detach":
-                # /voice-detach: 세션이 스스로 라우팅 후보에서 빠짐
-                # ("'멈춰' 이후 재라우팅 문제와 A안" 절). 테이블에 없는
-                # session_id면 그냥 False(무시) — 아직 notify로 등록된 적
-                # 없는 세션이 detach를 보내는 건 정상 경로가 아니지만, 이 경우도
-                # 에러로 취급하지 않고 조용히 넘어간다(다른 이벤트들과 동일한
-                # 관대한 처리 원칙).
-                found = self.table.mark_detached(session_id)
-                writer.write(json.dumps({"ok": True, "found": found}).encode())
-            elif event == "attach":
-                # /voice-attach: 세션이 스스로 라우팅 후보로 복귀. notify와
-                # 동일한 정보(project_name, socket_path, token)가 필요하다 —
-                # 처음 attach하는 세션(이전에 notify를 한 번도 안 보낸 경우)도
-                # 이 이벤트만으로 테이블에 새로 등록될 수 있다.
-                self.table.mark_attached(session_id, project_name, socket_path, token)
                 writer.write(json.dumps({"ok": True}).encode())
             elif event == "shutdown":
                 # /voice-off가 보내는 종료 신호. session_id 등은 형식만 맞으면
