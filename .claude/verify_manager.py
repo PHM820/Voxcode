@@ -30,9 +30,9 @@ assert time.monotonic() - t0 < 1
 
 # --- 2. 준비: 역할 문서·권한 설정 ---
 manager.prepare()
-assert "answers/<id>.json" in (MDIR / "CLAUDE.md").read_text(encoding="utf-8")
+assert "도구를 쓰지 말고" in (MDIR / "CLAUDE.md").read_text(encoding="utf-8")
 assert "하네스 자동 적용" in (MDIR / "CLAUDE.md").read_text(encoding="utf-8"), "전역 하네스 규칙 제외 문구 없음"
-assert "Write(./answers/**)" in (MDIR / ".claude" / "settings.json").read_text(encoding="utf-8")
+assert json.loads((MDIR / ".claude" / "settings.json").read_text(encoding="utf-8"))["permissions"]["allow"] == []
 
 # --- 3. 훅이 관리자 폴더에서 불리면 등록만 하고 프로젝트로 알리지 않는다 ---
 import _common  # noqa: E402
@@ -49,27 +49,45 @@ for f in HOME.glob("inbox/*.json"):
 assert manager.is_manager_cwd(str(MDIR)) and not manager.is_manager_cwd(".")
 
 
-# --- 4. 묻고 답 받기: 주입 메시지 → 답 파일 → dict, 파일 정리 ---
-def answering_send(answer):
+# --- 4. 묻고 답 받기: 질문은 메시지 본문에 → 관리자 답장 → Stop 훅(save_reply)이 답 파일로 → dict ---
+def answering_send(answer, wrap=lambda body: body):
     def send(sock, token, message):
         assert sock == r"\\.\pipe\mgr-test" and token == "mgr-token"
         qid = message.split("[Voxcode 질문 ")[1].split("]")[0]
-        q = json.loads((MDIR / "questions" / f"{qid}.json").read_text(encoding="utf-8"))
+        q = json.loads(message.split("\n", 1)[1])
         assert q["type"] == "judge" and q["id"] == qid
         if answer is not None:
-            (MDIR / "answers" / f"{qid}.json").write_text(json.dumps(answer, ensure_ascii=False), encoding="utf-8")
+            body = json.dumps({"id": qid, **answer} if isinstance(answer, dict) else answer, ensure_ascii=False)
+            manager.save_reply(wrap(body))
         return True
     return send
 
 
 ans = manager.ask({"type": "judge", "text": "x"}, send=answering_send({"command": "stop"}))
 assert ans == {"command": "stop"}, ans
-assert not list((MDIR / "questions").iterdir()) and not list((MDIR / "answers").iterdir()), "질문·답 파일이 남음"
+assert not list((MDIR / "answers").iterdir()), "답 파일이 남음"
+# 답장 앞뒤에 말·코드블록 표시가 붙어도 JSON을 찾는다
+ans = manager.ask({"type": "judge"}, send=answering_send({"say": "네"}, lambda b: f"답입니다\n```json\n{b}\n```"))
+assert ans == {"say": "네"}, ans
 assert manager.ask({"type": "judge"}, send=lambda *a: False) is None, "전달 실패"
 t0 = time.monotonic()
 assert manager.ask({"type": "judge"}, timeout=0.5, send=answering_send(None)) is None, "시간 초과"
-assert time.monotonic() - t0 < 2 and not list((MDIR / "questions").iterdir())
-assert manager.ask({"type": "judge"}, timeout=0.5, send=answering_send([1, 2])) is None, "dict 아닌 답"
+assert time.monotonic() - t0 < 2 and not list((MDIR / "answers").iterdir())
+assert manager.ask({"type": "judge"}, timeout=0.5, send=answering_send([1, 2])) is None, "id 없는 답"
+# save_reply: 답 두 개를 한 번에, 파일 이름이 될 id는 형식 검사
+assert manager.save_reply('{"id": "aaaaaaaaaaaa", "say": "1"} 그리고 {"id": "bbbbbbbbbbbb", "say": "2"}') == 2
+assert manager.save_reply('{"id": "../../evil", "say": "x"}') == 0, "id 형식 검사 없음"
+assert manager.save_reply("완료") == 0 and manager.save_reply("{깨진") == 0
+for f in (MDIR / "answers").iterdir():
+    f.unlink()
+
+# Stop 훅: 관리자 폴더에서 끝난 답장은 자르지 않고 답 파일로 (on-stop.py를 실제 프로세스로)
+reply = '설명 한 줄\n\n{"id": "cccccccccccc", "say": "#1 `코드`"}\n\n끝'
+subprocess.run([sys.executable, "hooks/on-stop.py"], env={**os.environ, "VOXCODE_HOME": str(HOME)},
+               input=json.dumps({"cwd": str(MDIR), "last_assistant_message": reply}), encoding="utf-8", check=True)
+got = json.loads((MDIR / "answers" / "cccccccccccc.json").read_text(encoding="utf-8"))
+assert got["say"] == "#1 `코드`", got
+(MDIR / "answers" / "cccccccccccc.json").unlink()
 
 
 # --- 5. route_and_send와 연결 ---

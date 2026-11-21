@@ -27,7 +27,7 @@ Claude Code 위에 얹는 음성 애드온: ① 응답이 끝나면 짧은 음�
   - 세션에 보내는 지시는 `wrap_voice` 틀: 원문 + 서브 관리자 해석(`meaning`, 참고용) + "이 프로젝트와 전혀 상관없으면 `MISROUTE_MARK`로만 답하라". 그 답이 완료 알림으로 오면 `InboxWatcher`가 읽지 않고 `reroute()`가 관리자에게 다른 세션을 다시 고르게 한다 — 세션마다 `last_voice`로 기억, 다시 보내기는 한 번만(`REROUTE_MAX`, 핑퐁 방지). 멈춰·다시 시작은 틀 없이 그대로 보낸다. 테스트는 `unwrap_voice`로 원문만 비교한다.
   - "음성모드 꺼"(`_is_voice_off`, "영상 모드"로 받아써지는 것까지)는 규칙으로 바로 되묻고(`pending_off`), "응"이면 `_spawn_voice_off`가 따로 떨어진 프로세스로 몇 초 뒤 `control.off()` — 리스너가 자기 자신을 끄는 것이라 같은 프로세스에서 부르면 안 된다.
   - 목록·다시 말해줘·조용히·상황 묻기는 `_listener_reply`가 세션에 안 보내고 읽어 준다. 조용히 모드는 `ListenerContext.quiet` → `should_speak_notice`(지금은 훅 종류 기준).
-  - 서브 관리자(`voice/manager.py`, `ask`·`launch`·`stop`)는 Jev가 애매할 때만 부른다. 주고받기는 `~/.voxcode/manager/questions·answers/` 파일 — 관리자에 주입하는 건 id 한 줄뿐. 관리자 폴더의 훅은 프로젝트로 알리지 않고 `session.json`만 등록한다(`hooks/_common.py`). 테스트는 `ask_manager`를 바꿔 끼운다.
+  - 서브 관리자(`voice/manager.py`, `ask`·`launch`·`stop`)는 Jev가 애매할 때만 부른다. 질문은 주입 메시지 본문에 JSON으로, 답은 관리자가 도구 없이 답장으로 쓰고 관리자 폴더의 Stop 훅(`hooks/on-stop.py` → `manager.save_reply`)이 `answers/<id>.json`으로 옮긴다 — 관리자가 도구를 쓰게 하면 한 번마다 1~2초씩 느려진다. 관리자 폴더의 훅은 프로젝트로 알리지 않고 `session.json`만 등록한다(`hooks/_common.py`). 테스트는 `ask_manager`를 바꿔 끼운다.
   - 기록이 먼저: `heard`를 쓰고 나서 전달한다. `record`는 예외를 밖으로 내지 않는다(마이크 스레드 보호). 테스트는 `VOXCODE_HOME`으로 폴더를 바꾼다.
 
 ## TTS·STT 엔진과 언어

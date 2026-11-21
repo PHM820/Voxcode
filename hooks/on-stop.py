@@ -10,7 +10,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import is_delegate_worker, is_enabled, notify_listener, read_payload  # noqa: E402
+from _common import is_delegate_worker, is_enabled, manager, notify_listener, read_payload  # noqa: E402
 
 
 def last_paragraph(text: str) -> str:
@@ -27,8 +27,11 @@ def last_paragraph(text: str) -> str:
 
 def main() -> int:
     payload = read_payload()
-    text = last_paragraph(payload.get("last_assistant_message") or "")
+    raw = payload.get("last_assistant_message") or ""
     cwd = payload.get("cwd") or os.getcwd()
+    if manager.is_manager_cwd(cwd):
+        manager.save_reply(raw)  # 관리자의 답장(JSON)은 자르지 않고 원문 그대로 답 파일로
+    text = last_paragraph(raw)
     if text and not is_delegate_worker(cwd) and is_enabled():
         notify_listener(text, cwd)
     return 0
